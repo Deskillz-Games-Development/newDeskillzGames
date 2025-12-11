@@ -14,6 +14,7 @@ exports.AIKnowledgeService = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const prisma_service_1 = require("../../prisma/prisma.service");
+const client_1 = require("@prisma/client");
 let AIKnowledgeService = AIKnowledgeService_1 = class AIKnowledgeService {
     constructor(prisma, configService) {
         this.prisma = prisma;
@@ -42,15 +43,54 @@ let AIKnowledgeService = AIKnowledgeService_1 = class AIKnowledgeService {
         return this.mapToResponseDto(knowledge);
     }
     async getAllKnowledge(category) {
-        const where = { isActive: true };
-        if (category) {
-            where.category = category;
-        }
+        const categoryEnum = category ? category : undefined;
+        const where = categoryEnum ? { category: categoryEnum, isActive: true } : { isActive: true };
         const knowledge = await this.prisma.aIKnowledgeBase.findMany({
             where,
-            orderBy: { createdAt: 'desc' },
+            orderBy: { timesUsed: 'desc' },
         });
-        return knowledge.map((k) => this.mapToResponseDto(k));
+        return knowledge.map(this.mapToResponseDto);
+    }
+    async incrementUsage(ids) {
+        if (!ids || ids.length === 0)
+            return;
+        await this.prisma.aIKnowledgeBase.updateMany({
+            where: { id: { in: ids } },
+            data: { timesUsed: { increment: 1 } },
+        });
+    }
+    async searchKnowledge(query, limit = 5) {
+        const queryEmbedding = await this.generateEmbedding(query);
+        const allKnowledge = await this.prisma.aIKnowledgeBase.findMany({
+            where: { isActive: true },
+        });
+        const results = allKnowledge
+            .map((k) => ({
+            id: k.id,
+            title: k.title,
+            content: k.content,
+            category: k.category,
+            similarity: this.cosineSimilarity(queryEmbedding, k.embedding),
+        }))
+            .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+            .slice(0, limit);
+        const queryLower = query.toLowerCase();
+        const keywordMatches = allKnowledge.filter((k) => k.title.toLowerCase().includes(queryLower) ||
+            k.content.toLowerCase().includes(queryLower) ||
+            k.tags.some((tag) => tag.toLowerCase().includes(queryLower)));
+        const merged = [...results];
+        for (const km of keywordMatches) {
+            if (!merged.find((r) => r.id === km.id)) {
+                merged.push({
+                    id: km.id,
+                    title: km.title,
+                    content: km.content,
+                    category: km.category,
+                    similarity: 0.5,
+                });
+            }
+        }
+        return merged.slice(0, limit);
     }
     async updateKnowledge(id, dto) {
         const data = { ...dto };
@@ -63,58 +103,22 @@ let AIKnowledgeService = AIKnowledgeService_1 = class AIKnowledgeService {
         });
         return this.mapToResponseDto(knowledge);
     }
-    async incrementUsage(ids) {
-        if (ids.length === 0)
-            return;
-        await this.prisma.aIKnowledgeBase.updateMany({
-            where: { id: { in: ids } },
-            data: { timesUsed: { increment: 1 } },
+    async recordUsage(id, wasHelpful) {
+        const knowledge = await this.prisma.aIKnowledgeBase.findUnique({
+            where: { id },
         });
-    }
-    async searchKnowledge(query, limit = 5) {
-        if (!this.openaiApiKey) {
-            return this.textSearch(query, limit);
-        }
-        try {
-            const queryEmbedding = await this.generateEmbedding(query);
-            const knowledge = await this.prisma.aIKnowledgeBase.findMany({
-                where: { isActive: true },
+        if (knowledge) {
+            const newTimesUsed = knowledge.timesUsed + 1;
+            const helpfulCount = knowledge.avgHelpfulness * knowledge.timesUsed + (wasHelpful ? 1 : 0);
+            const newAvgHelpfulness = helpfulCount / newTimesUsed;
+            await this.prisma.aIKnowledgeBase.update({
+                where: { id },
+                data: {
+                    timesUsed: newTimesUsed,
+                    avgHelpfulness: newAvgHelpfulness,
+                },
             });
-            const withSimilarity = knowledge.map((k) => ({
-                id: k.id,
-                title: k.title,
-                content: k.content,
-                category: k.category,
-                similarity: this.cosineSimilarity(queryEmbedding, k.embedding || []),
-            }));
-            return withSimilarity
-                .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-                .slice(0, limit)
-                .filter((k) => (k.similarity || 0) > 0.7);
         }
-        catch (error) {
-            this.logger.error('Semantic search failed, falling back to text search', error);
-            return this.textSearch(query, limit);
-        }
-    }
-    async textSearch(query, limit) {
-        const results = await this.prisma.aIKnowledgeBase.findMany({
-            where: {
-                isActive: true,
-                OR: [
-                    { title: { contains: query, mode: 'insensitive' } },
-                    { content: { contains: query, mode: 'insensitive' } },
-                    { tags: { hasSome: query.toLowerCase().split(' ') } },
-                ],
-            },
-            take: limit,
-        });
-        return results.map((r) => ({
-            id: r.id,
-            title: r.title,
-            content: r.content,
-            category: r.category,
-        }));
     }
     async generateEmbedding(text) {
         if (!this.openaiApiKey) {
@@ -129,11 +133,11 @@ let AIKnowledgeService = AIKnowledgeService_1 = class AIKnowledgeService {
                 },
                 body: JSON.stringify({
                     model: 'text-embedding-3-small',
-                    input: text,
+                    input: text.slice(0, 8000),
                 }),
             });
             const data = await response.json();
-            return data.data[0].embedding;
+            return data.data?.[0]?.embedding || [];
         }
         catch (error) {
             this.logger.error('Failed to generate embedding', error);
@@ -176,7 +180,7 @@ let AIKnowledgeService = AIKnowledgeService_1 = class AIKnowledgeService {
             this.logger.log('Knowledge base already seeded');
             return;
         }
-        this.logger.log('Seeding knowledge base...');
+        this.logger.log('Seeding knowledge base with SDK documentation...');
         const knowledgeEntries = [
             {
                 title: 'What is Deskillz.games',
@@ -200,7 +204,7 @@ What you do in the GAME APPS:
 - Withdraw winnings to your wallet
 
 The platform supports multiple cryptocurrencies: ETH, BTC, BNB, SOL, XRP, USDT, and USDC.`,
-                category: 'GENERAL',
+                category: client_1.AIKnowledgeCategory.GENERAL,
                 tags: ['platform', 'overview', 'what is', 'about', 'deskillz'],
             },
             {
@@ -215,701 +219,1094 @@ The platform supports multiple cryptocurrencies: ETH, BTC, BNB, SOL, XRP, USDT, 
    - Track your transaction history
    - Developer Portal for game creators
 
-2. MOBILE GAME APPS (Android/iOS) - Where You Play
-   - Open any Deskillz-integrated game on your phone
-   - Browse available tournaments within the game
-   - Join tournaments and pay entry fees
-   - Play matches and compete
-   - Your scores are automatically submitted
-   - Winnings go directly to your connected wallet
+2. GAME APPS (Downloaded from app stores) - Actual Gameplay
+   - This is where you PLAY the games
+   - Join and enter tournaments (pay entry fees here)
+   - Compete against other players in real matches
+   - Submit your scores
+   - Win and withdraw prizes
 
-Remember: You CANNOT join tournaments on the website. You must download the game app and join tournaments from within the game itself.`,
-                category: 'GENERAL',
-                tags: ['website', 'app', 'difference', 'mobile', 'play'],
+KEY POINT: You CANNOT play games on the website. The website is only for information and management. All gaming happens in the downloaded mobile apps.
+
+Flow: Website → Download App → Open App → Join Tournament → Play → Win → Withdraw to Wallet`,
+                category: client_1.AIKnowledgeCategory.GENERAL,
+                tags: ['website', 'game app', 'difference', 'how to play'],
             },
             {
-                title: 'How to Get Started as a Player',
-                content: `Getting started on Deskillz.games:
+                title: 'Unity SDK Overview',
+                content: `The Deskillz Unity SDK enables game developers to integrate their Unity games into the Deskillz competitive gaming platform.
 
-Step 1: Create an Account
-- Visit deskillz.games and click "Sign Up"
-- Connect your crypto wallet (MetaMask, WalletConnect, etc.)
-- Your wallet address becomes your unique identifier
+SDK FEATURES:
+- Tournament Integration: Entry fees, prize pools, matchmaking
+- Cryptocurrency Payments: BTC, ETH, SOLANA, XRP, BNB, USDT, USDC
+- Real-time Multiplayer: Synchronous player-vs-player
+- Asynchronous Gameplay: Ghost races, turn-based
+- Anti-Cheat: Score encryption, validation, memory protection
+- Pre-Built UI: HUD, leaderboards, results screens
+- Custom Stages: Private rooms with invite codes
+- NPC System: Practice bots, ghost replays
 
-Step 2: Browse Games
-- Go to the Games page on the website
-- Browse games by genre, popularity, or entry fee range
-- Read game descriptions and check tournament schedules
+SUPPORTED PLATFORMS:
+- Unity 2020.3 LTS or newer
+- iOS 12+
+- Android API 21+
+- WebGL (limited features)
 
-Step 3: Download a Game
-- Click on a game you want to play
-- Click the "Download" button (Android or iOS)
-- Install the game on your mobile device
+SDK STRUCTURE:
+deskillz-unity-sdk/
+├── Runtime/
+│   ├── Core/        (Initialization, config, events, networking)
+│   ├── Match/       (Match lifecycle, state machine, timer)
+│   ├── Score/       (Score tracking, encryption, validation)
+│   ├── UI/          (HUD, leaderboard, results, notifications)
+│   ├── Multiplayer/ (Real-time sync, lag compensation)
+│   ├── Stage/       (Custom rooms, invite codes)
+│   └── NPC/         (AI opponents, ghost replays)
+├── Editor/          (Unity Editor tools)
+└── package.json
 
-Step 4: Open the Game and Connect
-- Launch the game on your phone
-- Sign in with your Deskillz account
-- The game will connect to your wallet automatically
-
-Step 5: Join Tournaments (IN THE GAME APP)
-- Browse available tournaments within the game
-- Select a tournament and pay the entry fee
-- Play your best and compete for prizes!`,
-                category: 'PLAYER_GUIDE',
-                tags: ['getting started', 'new player', 'beginner', 'start', 'account'],
+Total SDK: 19,000+ lines of production-ready C# code`,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'overview', 'features', 'structure'],
             },
             {
-                title: 'How to Connect Your Wallet',
-                content: `To connect your cryptocurrency wallet to Deskillz.games:
+                title: 'Unity SDK Installation Guide',
+                content: `HOW TO INSTALL THE DESKILLZ UNITY SDK:
 
-On the Website:
-1. Click the "Connect Wallet" button in the top right corner
-2. Choose your wallet provider:
-   - MetaMask (browser extension)
-   - WalletConnect (mobile wallets)
-   - Coinbase Wallet
-   - Rainbow
-   - Trust Wallet
+STEP 1: Import Package
+1. Download deskillz-unity-sdk.zip from the Developer Portal
+2. Extract to your Unity project's root folder
+3. In Unity: Window → Package Manager → + → Add package from disk
+4. Select deskillz-unity-sdk/package.json
+
+STEP 2: Create Configuration
+1. Right-click in Project → Create → Deskillz → Config
+2. Set your API Key and Game ID (from developer portal)
+3. Configure environment (Sandbox/Production)
+
+STEP 3: Initialize in Code
+\`\`\`csharp
+using Deskillz;
+
+public class GameBootstrap : MonoBehaviour
+{
+    void Start()
+    {
+        // Option A: Use config asset
+        Deskillz.Initialize();
+        
+        // Option B: Pass credentials directly
+        Deskillz.Initialize("your-api-key", "your-game-id");
+    }
+}
+\`\`\`
+
+STEP 4: Add Manager to Scene
+Create empty GameObject → Add Component → DeskillzManager
+
+Or let it auto-create:
+\`\`\`csharp
+DeskillzManager.Instance.Initialize();
+\`\`\`
+
+COMMON INSTALLATION ISSUES:
+- "DeskillzManager not found": Make sure you added the package via Package Manager
+- "API Key invalid": Check your credentials in the Developer Portal
+- "Assembly reference error": Ensure Deskillz.SDK.asmdef is properly imported`,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'installation', 'setup', 'import', 'package'],
+            },
+            {
+                title: 'Unity SDK Integration Workflow',
+                content: `HOW TO INTEGRATE YOUR GAME WITH DESKILLZ SDK:
+
+MINIMUM INTEGRATION (Score-based game):
+\`\`\`csharp
+using Deskillz;
+using Deskillz.Match;
+using Deskillz.Score;
+
+public class MyGame : MonoBehaviour
+{
+    void OnEnable()
+    {
+        DeskillzEvents.OnMatchStart += HandleMatchStart;
+        DeskillzEvents.OnMatchComplete += HandleMatchComplete;
+    }
+    
+    void OnDisable()
+    {
+        DeskillzEvents.OnMatchStart -= HandleMatchStart;
+        DeskillzEvents.OnMatchComplete -= HandleMatchComplete;
+    }
+    
+    void HandleMatchStart(MatchData match)
+    {
+        StartGame(); // Your game start logic
+    }
+    
+    void HandleMatchComplete(MatchResult result)
+    {
+        Debug.Log($"Outcome: {result.Outcome}, Prize: {result.PrizeWon}");
+    }
+    
+    // Call when player scores
+    public void AddPoints(int points)
+    {
+        ScoreManager.Instance.AddScore(points);
+    }
+    
+    // Call when game ends
+    public void GameOver()
+    {
+        MatchController.Instance.EndMatch();
+    }
+}
+\`\`\`
+
+EVENT FLOW:
+1. Player Opens Game
+2. Deskillz.Initialize(apiKey, gameId)
+3. OnInitialized event fires
+4. Player enters matchmaking/tournament
+5. OnMatchReady event fires (MatchData received)
+6. OnMatchCountdown (3, 2, 1...)
+7. OnMatchStart event fires
+8. Gameplay begins
+9. ScoreManager.AddScore() for each point
+10. OnLocalScoreUpdated fires
+11. MatchController.EndMatch() when done
+12. ScoreManager.SubmitFinalScore() (auto-called)
+13. OnMatchComplete event fires (MatchResult received)
+14. Results screen shown
+15. Deskillz.ReturnToApp()`,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'integration', 'workflow', 'events', 'flow'],
+            },
+            {
+                title: 'Unity SDK Core System (Phase 1)',
+                content: `CORE SYSTEM COMPONENTS:
+
+FILES (9 files, 4,861 lines):
+- Deskillz.cs: Static API facade
+- DeskillzManager.cs: Main singleton controller
+- DeskillzConfig.cs: Configuration ScriptableObject
+- DeskillzEvents.cs: Event definitions and dispatcher
+- DeskillzNetwork.cs: HTTP/WebSocket networking
+- DeskillzCache.cs: Local data persistence
+- DeskillzLogger.cs: Debug logging with levels
+- DeskillzModels.cs: Data models (Player, Match, etc.)
+- DeskillzEnums.cs: Enumerations
+
+DESKILLZ STATIC API:
+\`\`\`csharp
+// Initialize
+Deskillz.Initialize(apiKey, gameId);
+Deskillz.Initialize(); // Uses config asset
+
+// Properties
+Deskillz.IsInitialized    // bool
+Deskillz.CurrentPlayer    // PlayerData
+Deskillz.CurrentMatch     // MatchData
+Deskillz.TestMode         // bool
+
+// Methods
+Deskillz.ReturnToApp();   // Exit to Deskillz app
+Deskillz.Logout();        // Clear session
+\`\`\`
+
+DESKILLZ EVENTS:
+\`\`\`csharp
+// Initialization
+DeskillzEvents.OnInitialized
+DeskillzEvents.OnInitializationFailed
+
+// Match lifecycle
+DeskillzEvents.OnMatchReady
+DeskillzEvents.OnMatchCountdown
+DeskillzEvents.OnMatchStart
+DeskillzEvents.OnMatchComplete
+DeskillzEvents.OnMatchPaused
+DeskillzEvents.OnMatchResumed
+
+// Score
+DeskillzEvents.OnLocalScoreUpdated
+DeskillzEvents.OnOpponentScoreUpdated
+
+// Multiplayer
+DeskillzEvents.OnPlayerJoined
+DeskillzEvents.OnPlayerLeft
+DeskillzEvents.OnConnectionStateChanged
+
+// Errors
+DeskillzEvents.OnError
+\`\`\`
+
+DESKILLZ CONFIG:
+\`\`\`csharp
+[CreateAssetMenu(menuName = "Deskillz/Config")]
+public class DeskillzConfig : ScriptableObject
+{
+    public string ApiKey;
+    public string GameId;
+    public DeskillzEnvironment Environment; // Sandbox/Production
+    public bool EnableLogging;
+    public LogLevel LogLevel;
+    public float NetworkTimeout;
+    public int MaxRetries;
+    public ScoreType ScoreType; // HigherIsBetter/LowerIsBetter
+}
+\`\`\``,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'core', 'initialization', 'events', 'config', 'phase 1'],
+            },
+            {
+                title: 'Unity SDK Match System (Phase 2)',
+                content: `MATCH SYSTEM COMPONENTS:
+
+FILES (5 files, 2,343 lines):
+- MatchController.cs: Match lifecycle manager
+- MatchStateMachine.cs: State transitions
+- MatchTimer.cs: Countdown and gameplay timer
+- MatchRound.cs: Multi-round support
+- MatchExtensions.cs: Helper methods
+
+MATCH STATES:
+None → Initializing → Ready → Countdown → Playing → Paused → Ended
+
+Terminal states: Completed, Cancelled, Forfeited
+
+VALID STATE TRANSITIONS:
+- None → Initializing
+- Initializing → Ready, Failed
+- Ready → Countdown
+- Countdown → Playing, Cancelled
+- Playing → Paused, Ended
+- Paused → Playing, Forfeited
+- Ended → Completed
+
+MATCH CONTROLLER API:
+\`\`\`csharp
+// Properties
+MatchController.Instance.CurrentMatch      // MatchData
+MatchController.Instance.IsMatchActive     // bool
+MatchController.Instance.CurrentState      // MatchState
+MatchController.Instance.TimeRemaining     // float (seconds)
+MatchController.Instance.TimeElapsed       // float (seconds)
+MatchController.Instance.CurrentRound      // int
+MatchController.Instance.TotalRounds       // int
+MatchController.Instance.IsTimedMatch      // bool
+
+// Methods
+MatchController.Instance.PauseMatch();
+MatchController.Instance.ResumeMatch();
+MatchController.Instance.EndMatch();
+MatchController.Instance.ForfeitMatch();
+MatchController.Instance.AddTime(seconds);    // Power-ups
+MatchController.Instance.RemoveTime(seconds); // Penalties
+\`\`\`
+
+MATCH DATA MODEL:
+\`\`\`csharp
+public class MatchData
+{
+    public string MatchId;
+    public string GameId;
+    public MatchType Type;        // Head2Head, Tournament, Practice
+    public decimal EntryFee;
+    public string Currency;
+    public decimal PrizePool;
+    public int TimeLimitSeconds;
+    public int Rounds;
+    public int CurrentRound;
+    public bool IsRealtime;
+    public List<MatchPlayer> Players;
+    public int LocalPlayerScore;
+}
+\`\`\`
+
+MATCH RESULT MODEL:
+\`\`\`csharp
+public class MatchResult
+{
+    public string MatchId;
+    public MatchOutcome Outcome;  // Win, Loss, Tie, Forfeit, Pending
+    public int FinalScore;
+    public int FinalRank;
+    public decimal PrizeWon;
+    public string Currency;
+    public int XpEarned;
+    public TimeSpan Duration;
+    public List<MatchPlayer> FinalStandings;
+}
+\`\`\``,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'match', 'controller', 'state', 'timer', 'phase 2'],
+            },
+            {
+                title: 'Unity SDK Score System (Phase 3)',
+                content: `SCORE SYSTEM COMPONENTS:
+
+FILES (4 files, 2,196 lines):
+- ScoreManager.cs: Score tracking and submission
+- ScoreEncryption.cs: AES-256-GCM encryption
+- ScoreValidator.cs: Anti-cheat validation
+- ScoreExtensions.cs: ProtectedScore, formatters
+
+SCORE MANAGER API:
+\`\`\`csharp
+// Properties
+ScoreManager.Instance.CurrentScore     // int
+ScoreManager.Instance.HighScore        // int
+ScoreManager.Instance.IsSubmitting     // bool
+
+// Score operations
+ScoreManager.Instance.SetScore(score);
+ScoreManager.Instance.AddScore(points);
+ScoreManager.Instance.SubtractScore(points);
+ScoreManager.Instance.MultiplyScore(multiplier);
+ScoreManager.Instance.ResetScore();
+
+// Submission
+ScoreManager.Instance.SubmitCheckpoint();   // During match
+ScoreManager.Instance.SubmitFinalScore();   // End of match (auto-called)
+
+// Events
+ScoreManager.Instance.OnScoreChanged += (oldScore, newScore) => { };
+\`\`\`
+
+SCORE SECURITY FEATURES:
+
+1. ENCRYPTION (ScoreEncryption):
+- AES-256-GCM encryption
+- HMAC-SHA256 payload signing
+- PBKDF2 key derivation
+- Keys derived from: matchId + sessionToken + apiKey
+
+2. VALIDATION (ScoreValidator):
+- Rate limiting: Max 1000 points/second
+- Single increase cap: Max 10000 per action
+- Pattern detection: Flags suspicious behavior
+- Input correlation: Validates scores against player actions
+
+\`\`\`csharp
+// Configure validation
+ScoreValidator.Instance.MaxScorePerSecond = 500;
+ScoreValidator.Instance.MaxSingleIncrease = 5000;
+
+// Record player actions for correlation
+ScoreValidator.Instance.RecordInput();   // When player presses button
+ScoreValidator.Instance.RecordAction();  // When game action occurs
+\`\`\`
+
+3. PROTECTED SCORE (Memory Protection):
+\`\`\`csharp
+// Use instead of int for score variables
+ProtectedScore myScore = 0;
+myScore += 100;      // Operators work normally
+myScore *= 2;
+int value = myScore; // Implicit conversion
+
+// Detects memory tampering
+// Raises AntiCheatViolation event if modified externally
+\`\`\`
+
+SCORE DISPLAY UTILITIES:
+\`\`\`csharp
+ScoreDisplay.Format(1500000);        // "1,500,000"
+ScoreDisplay.FormatCompact(1500000); // "1.5M"
+ScoreDisplay.GetOrdinal(1);          // "1st"
+ScoreDisplay.GetOrdinal(2);          // "2nd"
+\`\`\``,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'score', 'encryption', 'anticheat', 'validation', 'phase 3'],
+            },
+            {
+                title: 'Unity SDK UI System (Phase 4)',
+                content: `UI SYSTEM COMPONENTS:
+
+FILES (8 files, 3,484 lines):
+- DeskillzUIManager.cs: Main UI controller
+- DeskillzTheme.cs: Theme/styling system
+- IDeskillzUI.cs: Custom UI interface
+- UIPanel.cs: Base panel class
+- MatchHUD.cs: In-game HUD
+- LeaderboardUI.cs: Rankings display
+- ResultsUI.cs: Match results
+- UIComponents.cs: Countdown, notifications, pause
+
+UI MANAGER API:
+\`\`\`csharp
+// HUD
+DeskillzUIManager.Instance.ShowHUD();
+DeskillzUIManager.Instance.HideHUD();
+DeskillzUIManager.Instance.UpdateHUD(score, timeRemaining);
+
+// Leaderboard
+DeskillzUIManager.Instance.ShowLeaderboard(players);
+DeskillzUIManager.Instance.HideLeaderboard();
+
+// Results
+DeskillzUIManager.Instance.ShowResults(matchResult);
+DeskillzUIManager.Instance.HideResults();
+
+// Notifications
+DeskillzUIManager.Instance.ShowNotification("Message", NotificationType.Info);
+DeskillzUIManager.Instance.ShowSuccess("You won!");
+DeskillzUIManager.Instance.ShowError("Connection lost");
+DeskillzUIManager.Instance.ShowWarning("Low time!");
+
+// Pause menu
+DeskillzUIManager.Instance.ShowPauseMenu();
+DeskillzUIManager.Instance.HidePauseMenu();
+
+// Theme
+DeskillzUIManager.Instance.ApplyTheme(customTheme);
+\`\`\`
+
+THEME CUSTOMIZATION:
+\`\`\`csharp
+var theme = ScriptableObject.CreateInstance<DeskillzTheme>();
+theme.PrimaryColor = new Color(0.2f, 0.6f, 1f);
+theme.SecondaryColor = new Color(0.1f, 0.8f, 0.5f);
+theme.BackgroundColor = new Color(0.1f, 0.1f, 0.15f);
+theme.TextPrimary = Color.white;
+theme.ScoreFontSize = 72;
+
+DeskillzUIManager.Instance.ApplyTheme(theme);
+
+// Or use presets
+var darkTheme = DeskillzTheme.CreateDark();
+var lightTheme = DeskillzTheme.CreateLight();
+\`\`\`
+
+CUSTOM UI IMPLEMENTATION:
+\`\`\`csharp
+// Implement your own UI
+public class MyCustomUI : MonoBehaviour, IDeskillzUI
+{
+    public void ShowHUD() { /* Your code */ }
+    public void HideHUD() { /* Your code */ }
+    public void UpdateScore(int score) { /* Your code */ }
+    public void UpdateTimer(float seconds) { /* Your code */ }
+    public void ShowLeaderboard(List<MatchPlayer> players) { /* Your code */ }
+    public void ShowResults(MatchResult result) { /* Your code */ }
+    public void ShowCountdown(int seconds) { /* Your code */ }
+}
+
+// Register custom UI
+DeskillzUIManager.Instance.SetCustomUI(myCustomUI);
+
+// Revert to built-in
+DeskillzUIManager.Instance.ClearCustomUI();
+\`\`\``,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'ui', 'hud', 'leaderboard', 'results', 'theme', 'phase 4'],
+            },
+            {
+                title: 'Unity SDK Multiplayer System (Phase 5)',
+                content: `MULTIPLAYER SYSTEM COMPONENTS:
+
+FILES (5 files, 2,778 lines):
+- SyncManager.cs: Real-time multiplayer controller
+- PlayerState.cs: State synchronization
+- NetworkMessage.cs: Message types and serialization
+- LagCompensation.cs: Prediction and reconciliation
+- MultiplayerExtensions.cs: Helpers and utilities
+
+SYNC MANAGER API:
+\`\`\`csharp
+// Properties
+SyncManager.Instance.IsConnected      // bool
+SyncManager.Instance.IsHost           // bool
+SyncManager.Instance.LocalPlayerId    // string
+SyncManager.Instance.PlayerCount      // int
+SyncManager.Instance.Latency          // float (ms)
+SyncManager.Instance.RemotePlayers    // Dictionary
+
+// Connection
+SyncManager.Instance.Connect(roomId, playerId, isHost);
+SyncManager.Instance.Disconnect();
+
+// Messaging
+SyncManager.Instance.SendToAll(data);
+SyncManager.Instance.SendToPlayer(playerId, data);
+SyncManager.Instance.SendToHost(data);
+
+// State sync
+SyncManager.Instance.SetLocalState(playerState);
+SyncManager.Instance.GetPlayerState<T>(playerId);
+SyncManager.Instance.GetInterpolatedState(playerId);
+
+// Events
+SyncManager.Instance.OnConnected += () => { };
+SyncManager.Instance.OnDisconnected += (reason) => { };
+SyncManager.Instance.OnPlayerJoined += (player) => { };
+SyncManager.Instance.OnPlayerLeft += (playerId) => { };
+SyncManager.Instance.OnPlayerStateUpdated += (playerId, state) => { };
+SyncManager.Instance.OnMessageReceived += (senderId, message) => { };
+\`\`\`
+
+PLAYER STATE:
+\`\`\`csharp
+var state = new PlayerState
+{
+    PlayerId = myId,
+    Position = transform.position,
+    Rotation = transform.rotation.eulerAngles,
+    Velocity = rigidbody.velocity,
+    Score = currentScore,
+    Health = currentHealth,
+    IsAlive = true,
+    AnimationState = "running",
+    InputMove = new Vector2(h, v),
+    Inputs = InputFlags.Jump | InputFlags.Fire
+};
+
+SyncManager.Instance.SetLocalState(state);
+\`\`\`
+
+INPUT FLAGS:
+\`\`\`csharp
+[Flags]
+public enum InputFlags
+{
+    None = 0,
+    Jump = 1,
+    Fire = 2,
+    AltFire = 4,
+    Reload = 8,
+    Use = 16,
+    Crouch = 32,
+    Sprint = 64,
+    Ability1 = 128,
+    Ability2 = 256
+}
+\`\`\`
+
+NETWORK TRANSFORM COMPONENT:
+\`\`\`csharp
+// Add to networked GameObjects for automatic sync
+var netTransform = gameObject.AddComponent<NetworkTransform>();
+netTransform.Initialize(playerId, isLocal);
+netTransform.syncPosition = true;
+netTransform.syncRotation = true;
+netTransform.interpolationSpeed = 15f;
+netTransform.snapThreshold = 3f;
+\`\`\`
+
+LAG COMPENSATION:
+\`\`\`csharp
+// Check network quality
+float latency = SyncManager.Instance.Latency;
+string quality = LagCompensation.GetNetworkQualityText(); // "Excellent", "Good", etc.
+
+// Lag-compensated hit detection
+SyncManager.Instance.PerformLagCompensatedAction(clientTimestamp, () =>
+{
+    // Players are rewound to clientTimestamp
+    if (Physics.Raycast(origin, direction, out hit))
+    {
+        // Hit detection at historical positions
+    }
+});
+\`\`\``,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'multiplayer', 'sync', 'realtime', 'lag', 'phase 5'],
+            },
+            {
+                title: 'Unity SDK Custom Stages System (Phase 6)',
+                content: `CUSTOM STAGES COMPONENTS:
+
+FILES (5 files, 3,479 lines):
+- StageManager.cs: Create/join/manage stages
+- StageConfig.cs: Configuration and rules
+- StageRoom.cs: Room state and players
+- StageBrowserUI.cs: Browser and waiting room
+- StageExtensions.cs: Helpers, filters, chat
+
+STAGE MANAGER API:
+\`\`\`csharp
+// Properties
+StageManager.Instance.CurrentStage    // StageRoom
+StageManager.Instance.IsInStage       // bool
+StageManager.Instance.IsHost          // bool
+StageManager.Instance.PublicStages    // List<StageInfo>
+
+// Create
+StageManager.Instance.CreateStage(config, onSuccess, onError);
+StageManager.Instance.CreateQuickStage(gameName, onSuccess, onError);
+
+// Join
+StageManager.Instance.JoinByCode(inviteCode, onSuccess, onError);
+StageManager.Instance.JoinStage(stageId, onSuccess, onError);
+
+// Leave
+StageManager.Instance.LeaveStage(onSuccess, onError);
+
+// Host controls
+StageManager.Instance.StartStage(onSuccess, onError);
+StageManager.Instance.KickPlayer(playerId, reason, onSuccess, onError);
+StageManager.Instance.CancelStage(reason, onSuccess, onError);
+StageManager.Instance.UpdateConfig(newConfig, onSuccess, onError);
+
+// Player actions
+StageManager.Instance.SetReady(ready, onSuccess, onError);
+
+// Browsing
+StageManager.Instance.RefreshStageList(onSuccess, onError);
+StageManager.Instance.StartAutoRefresh(intervalSeconds);
+StageManager.Instance.StopRefreshing();
+
+// Invite
+StageManager.Instance.GetInviteLink();   // "https://deskillz.games/join/ABC123"
+StageManager.Instance.CopyInviteCode();  // Copies to clipboard
+\`\`\`
+
+STAGE CONFIGURATION:
+\`\`\`csharp
+var config = new StageConfig
+{
+    Name = "My Tournament",
+    GameId = "my-game",
+    MinPlayers = 2,
+    MaxPlayers = 8,
+    EntryFee = 5.00m,
+    Currency = "USDT",
+    GameMode = StageGameMode.Synchronous,
+    Visibility = StageVisibility.Private,
+    TimeLimitSeconds = 300,
+    Rounds = 3,
+    PrizeDistribution = PrizeDistribution.TopThree,
+    SkillRestricted = true,
+    MinElo = 1000,
+    MaxElo = 2000,
+    AutoStart = true,
+    AutoStartCountdown = 10
+};
+\`\`\`
+
+STAGE PRESETS:
+\`\`\`csharp
+var casual = StagePresets.Casual("MyGame");
+var competitive = StagePresets.Competitive("MyGame", 10m, "USDT");
+var party = StagePresets.Party("MyGame");
+var highStakes = StagePresets.HighStakes("MyGame", 100m, "USDT");
+\`\`\`
+
+STAGE VISIBILITY OPTIONS:
+- Private: Only joinable via invite code
+- Public: Visible in stage browser
+- FriendsOnly: Only friends can see/join
+- Unlisted: Not in browser, but link works
+
+PRIZE DISTRIBUTION OPTIONS:
+- WinnerTakesAll: 100% to 1st
+- TopTwo: 70%/30%
+- TopThree: 50%/30%/20%
+- TopFive: 40%/25%/18%/10%/7%
+- EvenSplit: Equal among all
+- Custom: Define CustomPrizePercentages`,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'stages', 'rooms', 'invite', 'private', 'phase 6'],
+            },
+            {
+                title: 'Unity SDK Troubleshooting Guide',
+                content: `COMMON SDK ISSUES AND SOLUTIONS:
+
+ISSUE: SDK not initializing
+SYMPTOMS: OnInitialized never fires, Deskillz.IsInitialized is false
+
+SOLUTIONS:
+1. Check API Key and Game ID are correct
+2. Verify DeskillzConfig asset is properly configured
+3. Check console for DeskillzError events
+4. Ensure network connectivity
+5. Try Sandbox environment first
+
+\`\`\`csharp
+DeskillzEvents.OnInitializationFailed += (error) => {
+    Debug.LogError($"Init failed: {error.Code} - {error.Message}");
+};
+\`\`\`
+
+---
+
+ISSUE: Scores not submitting
+SYMPTOMS: Score shows locally but not on server
+
+SOLUTIONS:
+1. Ensure match is active: MatchController.Instance.IsMatchActive
+2. Check for validation errors in ScoreValidator
+3. Verify network connection
+4. Check anti-cheat isn't flagging legitimate scores
+
+\`\`\`csharp
+ScoreManager.Instance.OnSubmissionFailed += (error) => {
+    Debug.LogError($"Submit failed: {error}");
+};
+\`\`\`
+
+---
+
+ISSUE: Multiplayer not connecting
+SYMPTOMS: OnConnected never fires, players can't see each other
+
+SOLUTIONS:
+1. Check SyncManager.Instance.IsConnected
+2. Verify WebSocket URL in config
+3. Check firewall/network settings
+4. Ensure both players have same room ID
+
+\`\`\`csharp
+SyncManager.Instance.OnDisconnected += (reason) => {
+    Debug.LogError($"Disconnected: {reason}");
+};
+\`\`\`
+
+---
+
+ISSUE: UI not showing
+SYMPTOMS: HUD, leaderboard, or results don't appear
+
+SOLUTIONS:
+1. Check DeskillzUIManager.Instance.UseBuiltInUI is true
+2. Ensure Canvas exists and is properly configured
+3. Check theme is applied
+4. Verify _autoShowHUD and _autoShowResults settings
+
+\`\`\`csharp
+// Force show
+DeskillzUIManager.Instance.ShowHUD();
+\`\`\`
+
+---
+
+ISSUE: Lag compensation not working
+SYMPTOMS: Hits registering incorrectly, players teleporting
+
+SOLUTIONS:
+1. Increase interpolation delay
+2. Check sync rate (20 Hz default)
+3. Verify NetworkTransform is on all synced objects
+4. Use PerformLagCompensatedAction for hit detection
+
+---
+
+ISSUE: Stage invite code not working
+SYMPTOMS: "Stage not found" when joining
+
+SOLUTIONS:
+1. Verify code is uppercase (auto-converted)
+2. Check stage hasn't expired or been cancelled
+3. Ensure stage visibility allows joining
+4. Check if stage is full`,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'troubleshooting', 'issues', 'errors', 'debug'],
+            },
+            {
+                title: 'Unity SDK Best Practices',
+                content: `SDK BEST PRACTICES FOR DEVELOPERS:
+
+PERFORMANCE:
+1. Sync rate - Use 20 Hz for most games, 30+ for fast-paced
+2. State size - Keep PlayerState minimal
+3. Unreliable messages - Use for frequent updates (position)
+4. Reliable messages - Use for important events (score, death)
+5. Object pooling - Reuse network messages
+
+SECURITY:
+1. Never trust client - Validate all scores server-side
+2. Use ProtectedScore - Prevents memory editing
+3. Record inputs - Correlate scores with player actions
+4. Rate limiting - Configure appropriate limits for your game
+5. Don't expose keys - Keep API keys out of source control
+
+USER EXPERIENCE:
+1. Show connection status - Use NetworkStats for ping display
+2. Handle disconnects gracefully - Auto-reconnect, notify user
+3. Smooth interpolation - Tune interpolationSpeed per game
+4. Responsive UI - Use _animateScoreChanges for polish
+5. Clear feedback - Use notifications for important events
+
+CODE ORGANIZATION:
+1. Single responsibility - One script per feature
+2. Event-driven - Use DeskillzEvents for decoupling
+3. Singletons sparingly - Access via Instance properties
+4. Clean up - Unsubscribe from events in OnDisable
+
+QUICK REFERENCE:
+\`\`\`csharp
+// Initialization
+Deskillz.Initialize(apiKey, gameId);
+
+// Match flow
+DeskillzEvents.OnMatchStart += (match) => StartGame();
+DeskillzEvents.OnMatchComplete += (result) => ShowResults(result);
+
+// During game
+ScoreManager.Instance.AddScore(points);
+
+// End game
+MatchController.Instance.EndMatch();
+
+// Multiplayer
+SyncManager.Instance.SetLocalState(myState);
+SyncManager.Instance.OnPlayerStateUpdated += (id, state) => {
+    UpdateOpponent(id, state);
+};
+
+// Custom stages
+StageManager.Instance.CreateStage(config, stage => {
+    Debug.Log($"Code: {stage.InviteCode}");
+});
+StageManager.Instance.JoinByCode("ABC123");
+StageManager.Instance.StartStage();
+\`\`\``,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'best practices', 'performance', 'security', 'tips'],
+            },
+            {
+                title: 'Unity SDK Frequently Asked Questions',
+                content: `UNITY SDK FAQ:
+
+GENERAL:
+Q: What Unity versions are supported?
+A: Unity 2020.3 LTS and newer.
+
+Q: Can I use my own UI?
+A: Yes, implement IDeskillzUI interface and call SetCustomUI().
+
+Q: How do I test without real money?
+A: Use DeskillzEnvironment.Sandbox in your config.
+
+Q: What cryptocurrencies are supported?
+A: BTC, ETH, SOLANA, XRP, BNB, USDT, USDC.
+
+MATCHES:
+Q: How do I end a match early?
+A: Call MatchController.Instance.EndMatch() or ForfeitMatch().
+
+Q: Can players pause?
+A: Yes, MatchController.Instance.PauseMatch(). Configurable per game.
+
+Q: How long can matches last?
+A: Configurable via TimeLimitSeconds. 0 = no limit.
+
+MULTIPLAYER:
+Q: What's the max players per match?
+A: Depends on game/server config. SDK supports up to 100.
+
+Q: How do I handle player disconnects?
+A: Listen to OnPlayerLeft event. SDK auto-handles reconnection attempts.
+
+Q: Can I do peer-to-peer?
+A: No, all communication goes through Deskillz servers for security.
+
+STAGES:
+Q: How long do invite codes last?
+A: Until stage starts, is cancelled, or times out (default 30 min).
+
+Q: Can spectators see scores?
+A: Yes, if AllowSpectators is true in config.
+
+Q: Can I change rules after creating?
+A: Host can call UpdateConfig() before match starts.
+
+SCORING:
+Q: How does anti-cheat work?
+A: Scores are encrypted, validated server-side, and compared against recorded inputs.
+
+Q: What happens if a cheater is detected?
+A: The AntiCheatViolation event fires, and the match may be invalidated.
+
+Q: Can I use floating point scores?
+A: Use integers only. Multiply by 100 for decimal precision (e.g., 15.75 → 1575).`,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['unity', 'sdk', 'faq', 'questions', 'answers'],
+            },
+            {
+                title: 'Developer Portal Guide',
+                content: `DEVELOPER PORTAL OVERVIEW:
+
+The Developer Portal at deskillz.games/developer allows game developers to:
+
+1. REGISTER YOUR GAME
+   - Create a new game listing
+   - Set game name, description, icons
+   - Configure game type (skill-based, timing, strategy, etc.)
+   - Set supported platforms (iOS, Android)
+
+2. GET API CREDENTIALS
+   - API Key for SDK initialization
+   - Game ID for your specific game
+   - Webhook URLs for server notifications
+
+3. CONFIGURE TOURNAMENTS
+   - Set entry fee ranges
+   - Configure prize distributions
+   - Define tournament schedules
+   - Set match durations
+
+4. MANAGE REVENUE
+   - View earnings dashboard
+   - See player statistics
+   - Track tournament performance
+   - Configure payout settings
+
+5. SDK DOWNLOADS
+   - Download Unity SDK package
+   - Download Unreal SDK package
+   - Access documentation
+
+6. ANALYTICS
+   - Active players
+   - Match completion rates
+   - Revenue reports
+   - Player retention metrics
+
+GETTING STARTED:
+1. Sign up at deskillz.games/developer
+2. Create your first game
+3. Download the SDK
+4. Follow the integration guide
+5. Submit for review
+6. Launch!
+
+REVENUE SHARING:
+- Developers receive 70% of tournament entry fees
+- Platform takes 30% for hosting, payments, anti-cheat
+- Payouts are processed weekly
+- Minimum payout threshold: $100`,
+                category: client_1.AIKnowledgeCategory.DEVELOPER_SDK,
+                tags: ['developer', 'portal', 'api', 'revenue', 'registration'],
+            },
+            {
+                title: 'Connecting Your Wallet',
+                content: `HOW TO CONNECT YOUR CRYPTOCURRENCY WALLET:
+
+SUPPORTED WALLETS:
+- MetaMask
+- WalletConnect compatible wallets
+- Coinbase Wallet
+- Trust Wallet
+- Rainbow
+
+STEPS TO CONNECT:
+1. Go to deskillz.games and click "Connect Wallet"
+2. Select your wallet provider
 3. Approve the connection request in your wallet
-4. Once connected, your wallet address and balance will display
+4. Your wallet is now linked to your Deskillz account
 
-Your wallet is used for:
-- Paying tournament entry fees (in the game apps)
-- Receiving prize winnings
-- Depositing and withdrawing funds
-- Verifying your identity
-
-Supported Networks:
-- Ethereum Mainnet
-- Polygon
-- BNB Smart Chain (BSC)
-- Arbitrum
-- Optimism
-- Base
-
-Tip: Make sure you have some native tokens (ETH, BNB, etc.) for gas fees when making transactions.`,
-                category: 'WALLET',
-                tags: ['wallet', 'connect', 'metamask', 'walletconnect', 'setup'],
-            },
-            {
-                title: 'How to Join a Tournament',
-                content: `IMPORTANT: Tournaments can ONLY be joined from within the game app, NOT on the website.
-
-How to join a tournament:
-
-Step 1: Download the Game
-- Find the game on deskillz.games
-- Download it from Google Play Store or Apple App Store
-- Install and open the game
-
-Step 2: Sign In
-- Open the game on your mobile device
-- Sign in with your Deskillz account
-- Make sure your wallet is connected
-
-Step 3: Browse Tournaments (IN THE GAME)
-- Look for the "Tournaments" or "Compete" section in the game
-- Browse available tournaments
-- Check entry fees, prize pools, and player counts
-
-Step 4: Join a Tournament
-- Select a tournament you want to enter
-- Review the entry fee and rules
-- Confirm payment from your connected wallet
-- Wait for the tournament to start or play immediately (depending on type)
-
-Step 5: Play and Compete
-- Play your best when the match begins
-- Your score is automatically submitted
-- Check the leaderboard to see your ranking
-- Prizes are distributed after the tournament ends
-
-Tournament Types:
-- Synchronous: Real-time matches against live opponents
-- Asynchronous: Play before the deadline, highest score wins`,
-                category: 'TOURNAMENT',
-                tags: ['tournament', 'join', 'enter', 'play', 'compete'],
-            },
-            {
-                title: 'Tournament Types Explained',
-                content: `Deskillz offers two types of tournaments:
-
-1. SYNCHRONOUS (Real-Time) Tournaments
-- You play against opponents in real-time
-- Matches happen simultaneously
-- Both players compete at the same moment
-- Best for: Head-to-head competitive games
-- Example: Racing games, fighting games, puzzle battles
-
-2. ASYNCHRONOUS (Play Anytime) Tournaments
-- Play your match anytime before the deadline
-- Your score is recorded and compared to others
-- No need to be online at the same time as opponents
-- Best for: Score-based games, single-player challenges
-- Example: High score games, puzzle games, arcade games
-
-Entry Fee Tiers:
-- Free Practice: No entry fee, no prizes (for learning)
-- Micro: $0.60 - $2 entry fees
-- Low: $2 - $10 entry fees
-- Medium: $10 - $50 entry fees
-- High: $50+ entry fees
-
-Higher entry fees = larger prize pools!`,
-                category: 'TOURNAMENT',
-                tags: ['tournament', 'types', 'sync', 'async', 'synchronous', 'asynchronous'],
-            },
-            {
-                title: 'Understanding Prize Pools and Payouts',
-                content: `How prize pools work on Deskillz:
-
-Prize Pool Calculation:
-- All entry fees are collected into the prize pool
-- Platform takes a service fee (5-15% depending on tournament)
-- Remaining amount is distributed to winners
-
-Typical Prize Distribution:
-- 1st Place: 50% of prize pool
-- 2nd Place: 30% of prize pool  
-- 3rd Place: 20% of prize pool
-(Distribution varies by tournament size)
-
-Payout Process:
-- Winnings are credited immediately after tournament ends
-- Funds go to your connected wallet balance
-- You can withdraw anytime from your profile
-- Minimum withdrawal varies by cryptocurrency
-
-Supported Prize Currencies:
-- ETH, BTC, BNB, SOL, XRP, USDT, USDC
-- Prizes paid in the same currency as entry fee
-
-Note: All transactions happen through the game app and are secured by blockchain technology.`,
-                category: 'TOURNAMENT',
-                tags: ['prize', 'payout', 'winnings', 'rewards', 'money'],
-            },
-            {
-                title: 'Depositing Funds',
-                content: `To add funds to your Deskillz wallet:
-
-Method 1: Direct Deposit
-1. Go to your Profile on deskillz.games
-2. Click "Deposit" or "Add Funds"
-3. Select the cryptocurrency you want to deposit
-4. Copy your deposit address or scan the QR code
-5. Send funds from your external wallet to this address
-6. Wait for blockchain confirmation (varies by network)
-
-Method 2: Through the Game App
-1. Open any Deskillz game on your phone
-2. Go to the wallet/balance section
-3. Tap "Add Funds" or "Deposit"
-4. Follow the prompts to complete the deposit
-
-Supported Cryptocurrencies:
+SUPPORTED CURRENCIES:
 - ETH (Ethereum)
-- BTC (Bitcoin - wrapped)
-- BNB (BNB Chain)
+- BTC (Bitcoin)
 - SOL (Solana)
 - XRP (Ripple)
+- BNB (Binance Coin)
 - USDT (Tether)
 - USDC (USD Coin)
 
-Processing Times:
-- Most deposits confirm within 5-30 minutes
-- Depends on blockchain network congestion
-- You'll receive a notification when funds arrive`,
-                category: 'WALLET',
-                tags: ['deposit', 'add funds', 'money', 'crypto', 'transfer'],
+IMPORTANT NOTES:
+- You can connect multiple wallets
+- Different currencies may use different networks
+- Always verify you're on the correct network before transactions
+- Keep your seed phrase safe - never share it with anyone
+
+DEPOSITING FUNDS:
+1. Go to your Wallet page
+2. Click "Deposit"
+3. Select the cryptocurrency
+4. Copy the deposit address OR scan QR code
+5. Send funds from your external wallet
+6. Wait for blockchain confirmation (varies by currency)
+
+WITHDRAWING FUNDS:
+1. Go to your Wallet page
+2. Click "Withdraw"
+3. Enter the amount
+4. Paste your destination wallet address
+5. Confirm the transaction
+6. Funds will arrive after blockchain confirmation`,
+                category: client_1.AIKnowledgeCategory.WALLET,
+                tags: ['wallet', 'connect', 'metamask', 'crypto', 'deposit', 'withdraw'],
             },
             {
-                title: 'Withdrawing Your Winnings',
-                content: `To withdraw your tournament winnings:
-
-Step 1: Go to Your Profile
-- Visit deskillz.games and sign in
-- Go to Profile > Wallet or Transactions
-
-Step 2: Initiate Withdrawal
-- Click "Withdraw"
-- Select the cryptocurrency to withdraw
-- Enter the amount
-- Confirm your destination wallet address
-
-Step 3: Confirm Transaction
-- Review the withdrawal details
-- Check the network fee estimate
-- Confirm the withdrawal
-
-Important Information:
-- Minimum withdrawal: 10 USDT equivalent
-- Processing time: Usually 1-24 hours
-- Network fees apply (deducted from withdrawal)
-- Withdrawals go to your connected wallet address
-
-Security Tips:
-- Always double-check the destination address
-- Start with a small test withdrawal if unsure
-- Keep your wallet secure and never share private keys`,
-                category: 'WALLET',
-                tags: ['withdraw', 'payout', 'cash out', 'funds', 'winnings'],
-            },
-            {
-                title: 'Supported Cryptocurrencies',
-                content: `Deskillz.games supports the following cryptocurrencies:
-
-For Entry Fees and Prizes:
-- ETH (Ethereum) - Most popular, widely supported
-- BTC (Bitcoin) - Via wrapped version
-- BNB (BNB Chain) - Low fees
-- SOL (Solana) - Fast transactions
-- XRP (Ripple) - Quick settlements
-- USDT (Tether) - Stable value, pegged to USD
-- USDC (USD Coin) - Stable value, pegged to USD
-
-Supported Blockchain Networks:
-- Ethereum Mainnet
-- Polygon (MATIC) - Low gas fees
-- BNB Smart Chain - Low gas fees
-- Arbitrum - Layer 2, low fees
-- Optimism - Layer 2, low fees
-- Base - Coinbase Layer 2
-
-Stablecoins (USDT/USDC) are recommended for:
-- Predictable tournament costs
-- Stable prize values
-- No price volatility concerns
-
-Note: Make sure you're using the correct network when depositing to avoid lost funds!`,
-                category: 'WALLET',
-                tags: ['crypto', 'cryptocurrency', 'supported', 'coins', 'tokens', 'network'],
-            },
-            {
-                title: 'Developer Portal Overview',
-                content: `The Deskillz Developer Portal allows game developers to integrate their games and earn revenue.
-
-Accessing the Developer Portal:
-- Visit deskillz.games/developer
-- Sign up for a developer account
-- Verify your email and complete profile
-
-Developer Portal Features:
-1. Dashboard - Overview of all your games and revenue
-2. My Games - Manage your integrated games
-3. SDK Downloads - Get Unity and Unreal SDKs
-4. API Documentation - Technical integration guides
-5. Revenue Reports - Track earnings and payouts
-6. Analytics - Player engagement and metrics
-
-Revenue Model:
-- Developers earn 70% of tournament fees
-- Platform takes 30%
-- Monthly payouts to your wallet
-- Minimum payout: 100 USDT equivalent
-
-Getting Started:
-1. Create a developer account
-2. Download the SDK for your game engine
-3. Integrate the SDK into your game
-4. Submit your game for review
-5. Once approved, start earning!`,
-                category: 'DEVELOPER_SDK',
-                tags: ['developer', 'portal', 'overview', 'account', 'revenue'],
-            },
-            {
-                title: 'Unity SDK Integration Guide',
-                content: `Integrating the Deskillz SDK into your Unity game:
-
-Step 1: Download the SDK
-- Go to Developer Portal > SDK Downloads
-- Download the Unity SDK package (.unitypackage)
-
-Step 2: Import into Unity
-- Open your Unity project
-- Assets > Import Package > Custom Package
-- Select the downloaded SDK package
-- Import all files
-
-Step 3: Initialize the SDK
-Add this code to your game's initialization:
-
-DeskillzSDK.Initialize("YOUR_GAME_ID", "YOUR_API_KEY");
-
-Step 4: Handle Tournament Events
-DeskillzSDK.Tournament.OnMatchStart += (matchInfo) => {
-    // matchInfo.mode (sync/async)
-    // matchInfo.players[]
-    // matchInfo.tournamentId
-    StartGame(matchInfo);
-};
-
-Step 5: Submit Scores
-When gameplay ends, submit the score:
-
-DeskillzSDK.Score.Submit(
-    score: playerScore,
-    metadata: gameStateHash,
-    onSuccess: () => ShowResults(),
-    onError: (err) => HandleError(err)
-);
-
-Step 6: Test in Sandbox
-- Use sandbox mode for testing
-- No real money transactions
-- Test all tournament flows
-
-Step 7: Submit for Review
-- Upload your build to the Developer Portal
-- Our team reviews within 2-3 business days`,
-                category: 'DEVELOPER_SDK',
-                tags: ['unity', 'sdk', 'integration', 'developer', 'code'],
-            },
-            {
-                title: 'Unreal Engine SDK Integration Guide',
-                content: `Integrating the Deskillz SDK into your Unreal Engine game:
-
-Step 1: Download the Plugin
-- Go to Developer Portal > SDK Downloads
-- Download the Unreal Engine plugin
-
-Step 2: Install the Plugin
-- Copy the plugin to your project's Plugins folder
-- Restart Unreal Editor
-- Enable the plugin in Edit > Plugins
-
-Step 3: Configure Settings
-- Go to Project Settings > Deskillz
-- Enter your Game ID and API Key
-- Configure tournament settings
-
-Step 4: Initialize in GameMode
-In your GameMode's BeginPlay:
-
-void AMyGameMode::BeginPlay()
-{
-    Super::BeginPlay();
-    UDeskillzSDK::Initialize();
-}
-
-Step 5: Handle Tournament Events
-Bind to tournament events:
-
-UDeskillzSDK::OnMatchStart.AddDynamic(
-    this, &AMyGameMode::HandleMatchStart
-);
-
-Step 6: Submit Scores
-When the match ends:
-
-UDeskillzSDK::SubmitScore(FinalScore, GameMetadata);
-
-Testing:
-- Enable Sandbox Mode in project settings
-- Test all flows before submission
-- Check logs for any SDK errors
-
-Submit for Review:
-- Package your game for mobile (Android/iOS)
-- Upload to Developer Portal
-- Review takes 2-3 business days`,
-                category: 'DEVELOPER_SDK',
-                tags: ['unreal', 'sdk', 'integration', 'developer', 'code'],
-            },
-            {
-                title: 'Game Submission and Review Process',
-                content: `Submitting your game to Deskillz for review:
-
-Before Submission Checklist:
-□ SDK properly integrated and tested
-□ All tournament modes working (sync/async as applicable)
-□ Score submission accurate and tamper-proof
-□ Game tested in sandbox mode
-□ No crashes or critical bugs
-□ Appropriate content (no adult/violent content)
-
-Submission Steps:
-1. Go to Developer Portal > My Games
-2. Click "Add New Game"
-3. Fill in game details:
-   - Game name and description
-   - Genre and tags
-   - Screenshots (at least 3)
-   - Video trailer (recommended)
-   - Supported platforms (Android/iOS)
-4. Upload your game build
-5. Submit for review
-
-Review Process:
-- Initial review: 2-3 business days
-- We test:
-  • SDK integration correctness
-  • Tournament flow functionality
-  • Score submission integrity
-  • Fair play compliance
-  • User experience quality
-
-Possible Outcomes:
-- Approved: Your game goes live!
-- Changes Requested: Fix issues and resubmit
-- Rejected: Major issues or policy violations
-
-After Approval:
-- Your game appears in the Games catalog
-- Players can download and compete
-- You start earning revenue immediately!`,
-                category: 'DEVELOPER_SDK',
-                tags: ['submit', 'review', 'approval', 'publish', 'developer'],
-            },
-            {
-                title: 'Developer Revenue and Payouts',
-                content: `Understanding developer revenue on Deskillz:
-
-Revenue Share Model:
-- Developers receive: 70%
-- Platform receives: 30%
-- Calculated from tournament entry fees
-
-Example:
-- Tournament entry fee: $10
-- 10 players = $100 total collected
-- Platform service fee: 15% = $15
-- Prize pool: $85
-- From the $15 service fee:
-  • Developer gets: $10.50 (70%)
-  • Platform keeps: $4.50 (30%)
-
-Tracking Your Revenue:
-- Developer Portal > Revenue Dashboard
-- View daily, weekly, monthly earnings
-- See breakdown by game and tournament
-- Download CSV reports for accounting
-
-Payout Schedule:
-- Payouts processed monthly
-- Minimum threshold: 100 USDT equivalent
-- Paid to your connected wallet
-- Payment in your preferred cryptocurrency
-
-Revenue Analytics:
-- Total revenue earned
-- Revenue by game
-- Revenue trends over time
-- Player engagement metrics
-- Tournament participation stats
-
-Tips to Maximize Revenue:
-- Create engaging, replayable games
-- Support both sync and async modes
-- Optimize for mobile performance
-- Promote your game to players`,
-                category: 'DEVELOPER_SDK',
-                tags: ['revenue', 'earnings', 'payout', 'money', 'developer', 'income'],
-            },
-            {
-                title: 'Wallet Connection Issues',
-                content: `Troubleshooting wallet connection problems:
-
-Common Issues and Solutions:
-
-1. Wallet Not Connecting
-- Make sure your wallet extension is installed and unlocked
-- Try refreshing the page
-- Clear browser cache and cookies
-- Disable other wallet extensions temporarily
-- Try a different browser (Chrome recommended)
-
-2. Wrong Network
-- Switch to a supported network in your wallet
-- Supported: Ethereum, Polygon, BSC, Arbitrum, Optimism, Base
-- Add the network manually if needed
-
-3. Transaction Failing
-- Check you have enough native token for gas fees
-- Increase gas limit if needed
-- Wait and retry if network is congested
-
-4. Wallet Not Showing Balance
-- Refresh the page
-- Check you're on the correct network
-- Verify the token is added to your wallet
-
-5. Mobile Wallet Issues (Game App)
-- Ensure the game has permission to connect
-- Try reconnecting your wallet in game settings
-- Check your internet connection
-
-Still Having Issues?
-- Try disconnecting and reconnecting your wallet
-- Restart your browser/app
-- Contact support through the Help section`,
-                category: 'TROUBLESHOOTING',
-                tags: ['wallet', 'connection', 'error', 'problem', 'fix'],
-            },
-            {
-                title: 'Tournament Issues',
-                content: `Troubleshooting tournament problems:
-
-"Can't Find Tournaments"
-- Tournaments are in the GAME APP, not the website
-- Open the game on your mobile device
-- Look for Tournaments/Compete section in the game menu
-
-"Can't Join Tournament"
-- Check you have sufficient balance for entry fee
-- Verify your wallet is connected in the game
-- Tournament may be full - try another one
-- Check if tournament has already started
-
-"Score Not Submitting"
-- Ensure stable internet connection during gameplay
-- The SDK submits scores automatically
-- Check for game updates if issue persists
-- Contact support with match details
-
-"Didn't Receive Prize"
-- Prizes are distributed after tournament ends
-- Check your transaction history
-- Verify connected wallet address
-- Allow up to 24 hours for processing
-
-"Tournament Cancelled"
-- Entry fees are automatically refunded
-- Refunds typically process within 1 hour
-- Check your transaction history
-
-"Disconnected During Match"
-- Try to reconnect quickly
-- If match lost, contact support
-- Provide tournament ID and timestamp`,
-                category: 'TROUBLESHOOTING',
-                tags: ['tournament', 'error', 'problem', 'fix', 'help'],
-            },
-            {
-                title: 'Game App Installation Issues',
-                content: `Troubleshooting game installation problems:
-
-Android Issues:
-
-"App Not Installing"
-- Check available storage space
-- Enable "Install from unknown sources" if downloading APK
-- Clear Google Play Store cache
-- Restart your device
-
-"App Crashing"
-- Check device meets minimum requirements
-- Update to latest Android version
-- Clear app cache and data
-- Reinstall the app
-
-iOS Issues:
-
-"Can't Download from App Store"
-- Check your Apple ID is signed in
-- Verify device compatibility
-- Check available storage
-- Restart device and try again
-
-"App Won't Open"
-- Force close and reopen
-- Check for iOS updates
-- Restart device
-- Delete and reinstall
-
-General Tips:
-- Ensure stable internet connection
-- Keep your device's OS updated
-- Check game's minimum requirements
-- Free up storage space if needed
-
-Download Links:
-- Find games at deskillz.games/games
-- Click the Android or iOS download button
-- You'll be redirected to the app store`,
-                category: 'TROUBLESHOOTING',
-                tags: ['install', 'download', 'app', 'android', 'ios', 'problem'],
-            },
-            {
-                title: 'Frequently Asked Questions - General',
-                content: `General FAQs about Deskillz:
-
-Q: Is Deskillz free to use?
-A: Creating an account is free. Tournament entry fees vary by tournament. Some games offer free practice modes.
-
-Q: What countries is Deskillz available in?
-A: Deskillz is available globally, but some regions may have restrictions on real-money gaming. Check local regulations.
-
-Q: Is Deskillz safe and secure?
-A: Yes! We use blockchain technology for transparent transactions, secure wallet connections, and encrypted communications.
-
-Q: How do I contact support?
-A: Use the AI assistant (that's me!), email support@deskillz.games, or visit the Help section on the website.
-
-Q: Can I play on desktop/web browser?
-A: No, games are mobile apps only (Android/iOS). The website is for information, downloads, and account management.
-
-Q: What's the minimum age to play?
-A: You must be 18 years or older to participate in real-money tournaments.
-
-Q: How do I report a bug or cheater?
-A: Use the Report function in the game or contact support with details.`,
-                category: 'FAQ',
-                tags: ['faq', 'questions', 'general', 'help', 'info'],
-            },
-            {
-                title: 'Account Security Best Practices',
-                content: `Keep your Deskillz account secure:
-
-DO:
-✓ Use a strong, unique password
-✓ Enable two-factor authentication (2FA)
-✓ Use a hardware wallet for large balances
-✓ Verify URLs before connecting your wallet
-✓ Keep your device's software updated
-✓ Log out from shared devices
-
-DON'T:
-✗ Never share your wallet seed phrase
-✗ Never share your private keys
-✗ Never click suspicious links
-✗ Never give anyone remote access to your device
-✗ Never send crypto to "double your money" offers
-
-We Will NEVER:
-- Ask for your seed phrase
-- Ask for your private keys
-- Send DMs asking for wallet access
-- Request you to send crypto to verify your account
-
-If You Suspect Unauthorized Access:
-1. Change your password immediately
-2. Disconnect and reconnect your wallet
-3. Check transaction history for unknown activity
-4. Contact support@deskillz.games
-5. Consider moving funds to a new wallet
-
-Report Suspicious Activity:
-- Email: security@deskillz.games
-- Include details and screenshots`,
-                category: 'FAQ',
-                tags: ['security', 'safety', 'account', 'protect', 'scam'],
+                title: 'How Tournaments Work',
+                content: `UNDERSTANDING DESKILLZ TOURNAMENTS:
+
+TOURNAMENT TYPES:
+
+1. HEAD-TO-HEAD
+   - 1v1 matches
+   - Direct competition
+   - Winner takes the prize pool
+
+2. BRACKET TOURNAMENTS
+   - Multiple rounds
+   - Elimination style
+   - Bigger prize pools for winners
+
+3. LEADERBOARD TOURNAMENTS
+   - Play anytime during tournament window
+   - Your best score competes
+   - Multiple attempts allowed
+   - Top scores win prizes
+
+4. QUICK MATCHES
+   - Instant matchmaking
+   - Lower stakes
+   - Great for practice
+
+ENTRY FEES & PRIZES:
+- Entry fee: What you pay to join
+- Prize pool: Total of all entry fees (minus platform fee)
+- Platform fee: 5-10% depending on tournament
+
+EXAMPLE:
+- 8 players pay $5 entry each
+- Total pot: $40
+- Platform fee (5%): $2
+- Prize pool: $38
+- 1st place: $22.80 (60%)
+- 2nd place: $11.40 (30%)
+- 3rd place: $3.80 (10%)
+
+HOW TO JOIN A TOURNAMENT:
+1. Open the game app (NOT the website)
+2. Go to Tournaments section in the app
+3. Select a tournament
+4. Pay the entry fee
+5. Play your match
+6. Submit your score
+7. Wait for results
+8. Winnings go to your wallet automatically`,
+                category: client_1.AIKnowledgeCategory.TOURNAMENT,
+                tags: ['tournament', 'prizes', 'entry fee', 'how to', 'join'],
             },
         ];
         for (const entry of knowledgeEntries) {
             try {
-                await this.createKnowledge({
-                    title: entry.title,
-                    content: entry.content,
-                    category: entry.category,
-                    tags: entry.tags,
-                    source: 'system-seed',
+                const embedding = await this.generateEmbedding(entry.content);
+                await this.prisma.aIKnowledgeBase.create({
+                    data: {
+                        title: entry.title,
+                        content: entry.content,
+                        category: entry.category,
+                        tags: entry.tags,
+                        embedding: embedding,
+                        isActive: true,
+                        timesUsed: 0,
+                        avgHelpfulness: 0,
+                    },
                 });
+                this.logger.log(`Seeded: ${entry.title}`);
             }
             catch (error) {
-                this.logger.error(`Failed to seed knowledge: ${entry.title}`, error);
+                this.logger.error(`Failed to seed: ${entry.title}`, error);
             }
         }
-        this.logger.log(`Knowledge base seeded with ${knowledgeEntries.length} entries`);
+        this.logger.log('Knowledge base seeding complete!');
     }
 };
 exports.AIKnowledgeService = AIKnowledgeService;

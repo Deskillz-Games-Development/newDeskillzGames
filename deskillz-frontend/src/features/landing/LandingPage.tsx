@@ -35,7 +35,7 @@ const howItWorks = [
   },
   {
     step: 2,
-    title: 'Choose a Game',
+    title: 'Download a Game',
     description: 'Browse skill-based games and find your competitive edge',
     icon: Gamepad2,
     color: 'neon-purple',
