@@ -1,0 +1,397 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   DESKILLZ.GAMES - CYBERPUNK GAMING THEME
+   ============================================ */
+
+@layer base {
+  :root {
+    --neon-cyan: #00f0ff;
+    --neon-purple: #bf00ff;
+    --neon-pink: #ff0080;
+    --neon-green: #00ff88;
+    --gaming-dark: #0a0a14;
+    --gaming-darker: #05050a;
+  }
+
+  * {
+    @apply border-gaming-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-gaming-dark text-white font-body;
+    background-image: 
+      radial-gradient(ellipse at top, rgba(0, 240, 255, 0.05) 0%, transparent 50%),
+      radial-gradient(ellipse at bottom right, rgba(191, 0, 255, 0.05) 0%, transparent 50%);
+  }
+
+  /* Custom Selection */
+  ::selection {
+    @apply bg-neon-cyan/30 text-white;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-gaming-darker;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gaming-lighter rounded-full;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-neon-cyan/50;
+  }
+
+  /* Firefox Scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #25253d #05050a;
+  }
+}
+
+@layer components {
+  /* ============================================
+     GLOWING EFFECTS
+     ============================================ */
+  
+  .glow-text {
+    text-shadow: 
+      0 0 10px currentColor,
+      0 0 20px currentColor,
+      0 0 40px currentColor;
+  }
+
+  .glow-text-subtle {
+    text-shadow: 
+      0 0 10px currentColor,
+      0 0 20px rgba(0, 240, 255, 0.3);
+  }
+
+  .glow-box {
+    box-shadow: 
+      0 0 20px rgba(0, 240, 255, 0.3),
+      0 0 40px rgba(0, 240, 255, 0.1),
+      inset 0 0 20px rgba(0, 240, 255, 0.05);
+  }
+
+  .glow-border {
+    position: relative;
+  }
+
+  .glow-border::before {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    background: linear-gradient(45deg, var(--neon-cyan), var(--neon-purple), var(--neon-pink), var(--neon-cyan));
+    background-size: 400% 400%;
+    border-radius: inherit;
+    z-index: -1;
+    animation: border-flow 3s linear infinite;
+    opacity: 0.7;
+  }
+
+  .glow-border::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--gaming-dark);
+    border-radius: inherit;
+    z-index: -1;
+  }
+
+  /* ============================================
+     GAMING CARDS
+     ============================================ */
+
+  .game-card {
+    @apply relative bg-gaming-light/50 backdrop-blur-sm rounded-xl overflow-hidden;
+    @apply border border-gaming-border/50;
+    @apply transition-all duration-300 ease-out;
+  }
+
+  .game-card:hover {
+    @apply border-neon-cyan/50 transform -translate-y-1;
+    box-shadow: 
+      0 20px 40px rgba(0, 0, 0, 0.5),
+      0 0 30px rgba(0, 240, 255, 0.1);
+  }
+
+  .game-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      135deg,
+      rgba(0, 240, 255, 0.1) 0%,
+      transparent 50%,
+      rgba(191, 0, 255, 0.05) 100%
+    );
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+
+  .game-card:hover::before {
+    opacity: 1;
+  }
+
+  /* ============================================
+     BUTTONS
+     ============================================ */
+
+  .btn-primary {
+    @apply relative px-6 py-3 font-display font-semibold uppercase tracking-wider;
+    @apply bg-gradient-to-r from-neon-cyan to-primary-500;
+    @apply text-gaming-darker rounded-lg;
+    @apply transition-all duration-300 ease-out;
+    @apply hover:shadow-neon-cyan hover:scale-105;
+    @apply active:scale-95;
+  }
+
+  .btn-primary::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+    transform: translateX(-100%);
+    transition: transform 0.5s ease;
+  }
+
+  .btn-primary:hover::before {
+    transform: translateX(100%);
+  }
+
+  .btn-secondary {
+    @apply relative px-6 py-3 font-display font-semibold uppercase tracking-wider;
+    @apply bg-transparent border-2 border-neon-cyan text-neon-cyan rounded-lg;
+    @apply transition-all duration-300 ease-out;
+    @apply hover:bg-neon-cyan/10 hover:shadow-neon-cyan;
+    @apply active:scale-95;
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2 font-body font-medium;
+    @apply text-white/70 hover:text-neon-cyan;
+    @apply transition-colors duration-200;
+  }
+
+  /* ============================================
+     ANIMATED BACKGROUNDS
+     ============================================ */
+
+  .bg-grid-animated {
+    background-image: 
+      linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+    background-size: 50px 50px;
+    animation: grid-move 20s linear infinite;
+  }
+
+  @keyframes grid-move {
+    0% { background-position: 0 0; }
+    100% { background-position: 50px 50px; }
+  }
+
+  .bg-noise {
+    position: relative;
+  }
+
+  .bg-noise::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    opacity: 0.5;
+  }
+
+  /* ============================================
+     SCAN LINE EFFECT
+     ============================================ */
+
+  .scan-lines {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .scan-lines::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.1) 0px,
+      rgba(0, 0, 0, 0.1) 1px,
+      transparent 1px,
+      transparent 2px
+    );
+    pointer-events: none;
+    opacity: 0.3;
+  }
+
+  /* ============================================
+     NEON TEXT VARIATIONS
+     ============================================ */
+
+  .text-neon-glow-cyan {
+    @apply text-neon-cyan;
+    text-shadow: 
+      0 0 10px rgba(0, 240, 255, 0.8),
+      0 0 20px rgba(0, 240, 255, 0.5),
+      0 0 40px rgba(0, 240, 255, 0.3);
+  }
+
+  .text-neon-glow-purple {
+    @apply text-neon-purple;
+    text-shadow: 
+      0 0 10px rgba(191, 0, 255, 0.8),
+      0 0 20px rgba(191, 0, 255, 0.5),
+      0 0 40px rgba(191, 0, 255, 0.3);
+  }
+
+  .text-neon-glow-pink {
+    @apply text-neon-pink;
+    text-shadow: 
+      0 0 10px rgba(255, 0, 128, 0.8),
+      0 0 20px rgba(255, 0, 128, 0.5),
+      0 0 40px rgba(255, 0, 128, 0.3);
+  }
+
+  /* ============================================
+     PROGRESS BARS (Gaming Style)
+     ============================================ */
+
+  .progress-bar {
+    @apply relative h-3 bg-gaming-darker rounded-full overflow-hidden;
+  }
+
+  .progress-bar-fill {
+    @apply h-full rounded-full;
+    background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple));
+    box-shadow: 0 0 10px var(--neon-cyan);
+    transition: width 0.5s ease-out;
+  }
+
+  .progress-bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.2) 50%,
+      transparent 100%
+    );
+    animation: shimmer 2s linear infinite;
+  }
+
+  /* ============================================
+     INPUT FIELDS
+     ============================================ */
+
+  .input-gaming {
+    @apply w-full px-4 py-3 bg-gaming-darker border border-gaming-border rounded-lg;
+    @apply text-white placeholder-white/30 font-body;
+    @apply transition-all duration-300;
+    @apply focus:outline-none focus:border-neon-cyan focus:shadow-neon-cyan;
+  }
+
+  /* ============================================
+     TOOLTIP
+     ============================================ */
+
+  .tooltip {
+    @apply relative;
+  }
+
+  .tooltip::after {
+    content: attr(data-tooltip);
+    @apply absolute bottom-full left-1/2 -translate-x-1/2 mb-2;
+    @apply px-3 py-1.5 text-sm font-body;
+    @apply bg-gaming-darker border border-gaming-border rounded-lg;
+    @apply opacity-0 pointer-events-none;
+    @apply transition-all duration-200;
+    white-space: nowrap;
+  }
+
+  .tooltip:hover::after {
+    @apply opacity-100;
+  }
+
+  /* ============================================
+     GLASS MORPHISM
+     ============================================ */
+
+  .glass {
+    @apply bg-white/5 backdrop-blur-xl;
+    @apply border border-white/10;
+  }
+
+  .glass-dark {
+    @apply bg-gaming-dark/80 backdrop-blur-xl;
+    @apply border border-gaming-border/50;
+  }
+
+  /* ============================================
+     HEXAGON PATTERN
+     ============================================ */
+
+  .hex-pattern {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'%3E%3Cg fill-rule='evenodd'%3E%3Cg fill='%2300f0ff' fill-opacity='0.03'%3E%3Cpath d='M13.99 9.25l13 7.5v15l-13 7.5L1 31.75v-15l12.99-7.5zM3 17.9v12.7l10.99 6.34 11-6.35V17.9l-11-6.34L3 17.9zM0 15l12.98-7.5V0h-2v6.35L0 12.69v2.3zm0 18.5L12.98 41v8h-2v-6.85L0 35.81v-2.3zM15 0v7.5L27.99 15H28v-2.31h-.01L17 6.35V0h-2zm0 49v-8l12.99-7.5H28v2.31h-.01L17 42.15V49h-2z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  }
+}
+
+@layer utilities {
+  /* Clip paths for angular designs */
+  .clip-corner {
+    clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 20px 100%, 0 calc(100% - 20px));
+  }
+
+  .clip-corner-sm {
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+  }
+
+  /* Text gradient */
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, var(--neon-cyan), var(--neon-purple));
+  }
+
+  .text-gradient-gold {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #ffd700, #ff8c00);
+  }
+
+  /* Hide scrollbar */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Perspective for 3D effects */
+  .perspective-1000 {
+    perspective: 1000px;
+  }
+
+  .preserve-3d {
+    transform-style: preserve-3d;
+  }
+}
