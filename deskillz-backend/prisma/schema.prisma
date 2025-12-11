@@ -1,0 +1,732 @@
+// ===========================================
+// DESKILLZ.GAMES DATABASE SCHEMA
+// ===========================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================
+// ENUMS
+// ===========================================
+
+enum UserRole {
+  PLAYER
+  DEVELOPER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+enum GameStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum GamePlatform {
+  ANDROID
+  IOS
+  BOTH
+}
+
+enum TournamentMode {
+  SYNC        // Real-time multiplayer
+  ASYNC       // Play anytime before deadline
+}
+
+enum TournamentStatus {
+  SCHEDULED
+  OPEN        // Accepting entries
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum EntryStatus {
+  PENDING     // Payment pending
+  CONFIRMED   // Entry confirmed
+  PLAYING     // Currently in game
+  COMPLETED   // Finished playing
+  FORFEITED   // Left/disconnected
+  REFUNDED    // Tournament cancelled
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  ENTRY_FEE
+  PRIZE_WIN
+  REFUND
+  DEVELOPER_PAYOUT
+  PLATFORM_FEE
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CryptoCurrency {
+  ETH
+  BTC
+  BNB
+  SOL
+  XRP
+  USDT_ETH
+  USDT_TRON
+  USDT_BSC
+  USDC_ETH
+  USDC_POLYGON
+  USDC_ARB
+  USDC_BASE
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+// ===========================================
+// USER & AUTHENTICATION
+// ===========================================
+
+model User {
+  id            String      @id @default(uuid())
+  email         String?     @unique
+  username      String      @unique
+  displayName   String?
+  avatarUrl     String?
+  role          UserRole    @default(PLAYER)
+  status        UserStatus  @default(ACTIVE)
+  
+  // Stats
+  totalWins       Int       @default(0)
+  totalMatches    Int       @default(0)
+  totalEarnings   Decimal   @default(0) @db.Decimal(18, 8)
+  skillRating     Int       @default(1000)
+  
+  // Settings
+  notificationsEnabled  Boolean @default(true)
+  emailNotifications    Boolean @default(true)
+  twoFactorEnabled      Boolean @default(false)
+  twoFactorSecret       String?
+  
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  lastLoginAt   DateTime?
+  
+  // Relations
+  wallets           WalletAccount[]
+  tournamentEntries TournamentEntry[]
+  gameScores        GameScore[]
+  transactions      Transaction[]
+  games             Game[]              @relation("DeveloperGames")
+  disputes          Dispute[]           @relation("DisputeUser")
+  disputesReviewed  Dispute[]           @relation("DisputeReviewer")
+  notifications     Notification[]
+  sessions          UserSession[]
+  
+  @@index([username])
+  @@index([email])
+  @@index([role])
+  @@index([skillRating])
+}
+
+model WalletAccount {
+  id              String    @id @default(uuid())
+  userId          String
+  walletAddress   String
+  walletType      String    // metamask, walletconnect, tronlink, etc.
+  chain           String    // ethereum, polygon, bsc, tron, etc.
+  isPrimary       Boolean   @default(false)
+  label           String?   // User-defined label
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([walletAddress, chain])
+  @@index([userId])
+  @@index([walletAddress])
+}
+
+model UserSession {
+  id            String    @id @default(uuid())
+  userId        String
+  refreshToken  String    @unique
+  userAgent     String?
+  ipAddress     String?
+  expiresAt     DateTime
+  
+  createdAt     DateTime  @default(now())
+  
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([refreshToken])
+}
+
+// ===========================================
+// GAMES
+// ===========================================
+
+model Game {
+  id              String        @id @default(uuid())
+  developerId     String
+  
+  // Basic Info
+  name            String
+  slug            String        @unique
+  description     String
+  shortDescription String?
+  
+  // Media
+  iconUrl         String?
+  bannerUrl       String?
+  screenshots     String[]      // Array of URLs
+  videoUrl        String?
+  
+  // Categorization
+  genre           String[]
+  tags            String[]
+  
+  // Platform & SDK
+  platform        GamePlatform
+  androidUrl      String?       // Play Store or APK URL
+  iosUrl          String?       // App Store URL
+  sdkVersion      String?
+  minSdkVersion   String?
+  
+  // Configuration
+  minPlayers      Int           @default(2)
+  maxPlayers      Int           @default(10)
+  avgMatchDuration Int?         // In seconds
+  supportsSync    Boolean       @default(true)
+  supportsAsync   Boolean       @default(true)
+  demoEnabled     Boolean       @default(false)
+  
+  // Status
+  status          GameStatus    @default(DRAFT)
+  rejectionReason String?
+  
+  // Stats
+  totalMatches    Int           @default(0)
+  totalPlayers    Int           @default(0)
+  avgRating       Decimal       @default(0) @db.Decimal(3, 2)
+  ratingCount     Int           @default(0)
+  
+  // Revenue
+  revenueShare    Decimal       @default(70) @db.Decimal(5, 2) // Developer's %
+  totalRevenue    Decimal       @default(0) @db.Decimal(18, 8)
+  
+  // Timestamps
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  approvedAt      DateTime?
+  launchedAt      DateTime?
+  
+  // Relations
+  developer       User          @relation("DeveloperGames", fields: [developerId], references: [id])
+  tournaments     Tournament[]
+  gameScores      GameScore[]
+  
+  @@index([developerId])
+  @@index([slug])
+  @@index([status])
+  @@index([genre])
+}
+
+// ===========================================
+// TOURNAMENTS
+// ===========================================
+
+model Tournament {
+  id              String            @id @default(uuid())
+  gameId          String
+  
+  // Basic Info
+  name            String
+  description     String?
+  
+  // Configuration
+  mode            TournamentMode
+  entryFee        Decimal           @db.Decimal(18, 8)
+  entryCurrency   CryptoCurrency
+  prizePool       Decimal           @db.Decimal(18, 8)
+  prizeCurrency   CryptoCurrency
+  
+  // Players
+  minPlayers      Int               @default(2)
+  maxPlayers      Int
+  currentPlayers  Int               @default(0)
+  
+  // Prize Distribution (JSON: { "1": 50, "2": 30, "3": 20 })
+  prizeDistribution Json
+  
+  // Timing
+  scheduledStart  DateTime
+  scheduledEnd    DateTime?         // For async tournaments
+  actualStart     DateTime?
+  actualEnd       DateTime?
+  
+  // Sync-specific
+  matchDuration   Int?              // Seconds per match
+  roundsCount     Int               @default(1)
+  
+  // Status
+  status          TournamentStatus  @default(SCHEDULED)
+  
+  // Fees
+  platformFeePercent Decimal        @default(10) @db.Decimal(5, 2)
+  platformFeeAmount  Decimal        @default(0) @db.Decimal(18, 8)
+  
+  // Escrow
+  escrowTxHash    String?
+  escrowAddress   String?
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  // Relations
+  game            Game              @relation(fields: [gameId], references: [id])
+  entries         TournamentEntry[]
+  scores          GameScore[]
+  disputes        Dispute[]
+  
+  @@index([gameId])
+  @@index([status])
+  @@index([scheduledStart])
+  @@index([entryCurrency])
+}
+
+model TournamentEntry {
+  id              String        @id @default(uuid())
+  tournamentId    String
+  userId          String
+  
+  // Payment
+  entryTxHash     String?
+  entryAmount     Decimal       @db.Decimal(18, 8)
+  entryCurrency   CryptoCurrency
+  
+  // Status
+  status          EntryStatus   @default(PENDING)
+  
+  // Results
+  finalRank       Int?
+  prizeWon        Decimal?      @db.Decimal(18, 8)
+  prizeTxHash     String?
+  
+  // Timing
+  joinedAt        DateTime      @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  
+  // Relations
+  tournament      Tournament    @relation(fields: [tournamentId], references: [id])
+  user            User          @relation(fields: [userId], references: [id])
+  
+  @@unique([tournamentId, userId])
+  @@index([tournamentId])
+  @@index([userId])
+  @@index([status])
+}
+
+model GameScore {
+  id              String      @id @default(uuid())
+  tournamentId    String
+  userId          String
+  gameId          String
+  
+  // Score Data
+  score           Int
+  metadata        Json?       // Game-specific data
+  
+  // Verification
+  verified        Boolean     @default(false)
+  verifiedAt      DateTime?
+  signature       String?     // SDK-signed score
+  
+  // Anti-cheat
+  flagged         Boolean     @default(false)
+  flagReason      String?
+  
+  submittedAt     DateTime    @default(now())
+  
+  // Relations
+  tournament      Tournament  @relation(fields: [tournamentId], references: [id])
+  user            User        @relation(fields: [userId], references: [id])
+  game            Game        @relation(fields: [gameId], references: [id])
+  
+  @@index([tournamentId])
+  @@index([userId])
+  @@index([score])
+}
+
+// ===========================================
+// TRANSACTIONS & WALLET
+// ===========================================
+
+model Transaction {
+  id              String            @id @default(uuid())
+  userId          String
+  
+  // Transaction Details
+  type            TransactionType
+  amount          Decimal           @db.Decimal(18, 8)
+  currency        CryptoCurrency
+  
+  // Blockchain
+  txHash          String?           @unique
+  fromAddress     String?
+  toAddress       String?
+  chain           String?
+  
+  // Status
+  status          TransactionStatus @default(PENDING)
+  failureReason   String?
+  
+  // Reference
+  referenceType   String?           // tournament, payout, etc.
+  referenceId     String?           // ID of related entity
+  
+  // Metadata
+  description     String?
+  metadata        Json?
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  completedAt     DateTime?
+  
+  // Relations
+  user            User              @relation(fields: [userId], references: [id])
+  
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([txHash])
+  @@index([createdAt])
+}
+
+// ===========================================
+// DISPUTES & SUPPORT
+// ===========================================
+
+model Dispute {
+  id              String        @id @default(uuid())
+  tournamentId    String
+  userId          String
+  reviewerId      String?
+  
+  // Details
+  reason          String
+  description     String
+  evidence        String[]      // URLs to screenshots, etc.
+  
+  // Resolution
+  status          DisputeStatus @default(OPEN)
+  resolution      String?
+  resolvedAt      DateTime?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  // Relations
+  tournament      Tournament    @relation(fields: [tournamentId], references: [id])
+  user            User          @relation("DisputeUser", fields: [userId], references: [id])
+  reviewer        User?         @relation("DisputeReviewer", fields: [reviewerId], references: [id])
+  
+  @@index([tournamentId])
+  @@index([userId])
+  @@index([status])
+}
+
+// ===========================================
+// NOTIFICATIONS
+// ===========================================
+
+model Notification {
+  id              String    @id @default(uuid())
+  userId          String
+  
+  type            String    // tournament_start, prize_won, etc.
+  title           String
+  message         String
+  data            Json?     // Additional data
+  
+  read            Boolean   @default(false)
+  readAt          DateTime?
+  
+  createdAt       DateTime  @default(now())
+  
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([read])
+  @@index([createdAt])
+}
+
+// ===========================================
+// PLATFORM SETTINGS
+// ===========================================
+
+model PlatformSettings {
+  id                  String    @id @default("default")
+  
+  // Fees
+  defaultPlatformFee  Decimal   @default(10) @db.Decimal(5, 2)
+  minEntryFee         Decimal   @default(1) @db.Decimal(18, 8)
+  maxEntryFee         Decimal   @default(1000) @db.Decimal(18, 8)
+  
+  // Developer
+  defaultRevenueShare Decimal   @default(70) @db.Decimal(5, 2)
+  minPayoutAmount     Decimal   @default(10) @db.Decimal(18, 8)
+  
+  // Tournament
+  minPlayersDefault   Int       @default(2)
+  maxPlayersDefault   Int       @default(100)
+  
+  // Maintenance
+  maintenanceMode     Boolean   @default(false)
+  maintenanceMessage  String?
+  
+  updatedAt           DateTime  @updatedAt
+}
+
+// ===========================================
+// LEADERBOARD CACHE (Denormalized for performance)
+// ===========================================
+
+model LeaderboardEntry {
+  id              String    @id @default(uuid())
+  userId          String
+  gameId          String?   // null = global leaderboard
+  
+  // Period
+  period          String    // all_time, monthly, weekly, daily
+  periodStart     DateTime
+  
+  // Stats
+  rank            Int
+  totalScore      Int       @default(0)
+  matchesPlayed   Int       @default(0)
+  matchesWon      Int       @default(0)
+  earnings        Decimal   @default(0) @db.Decimal(18, 8)
+  
+  updatedAt       DateTime  @updatedAt
+  
+  @@unique([userId, gameId, period, periodStart])
+  @@index([gameId, period, rank])
+  @@index([period, periodStart])
+}
+
+// ===========================================
+// AI ASSISTANT
+// ===========================================
+
+enum AIProvider {
+  OPENAI
+  CLAUDE
+}
+
+enum AIFeedbackRating {
+  HELPFUL
+  NOT_HELPFUL
+}
+
+enum AIMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum AIKnowledgeCategory {
+  PLAYER_GUIDE
+  DEVELOPER_SDK
+  TROUBLESHOOTING
+  FAQ
+  TOURNAMENT
+  WALLET
+  GENERAL
+}
+
+model AIConversation {
+  id              String      @id @default(uuid())
+  userId          String?     // null for anonymous users
+  sessionId       String      // For tracking anonymous sessions
+  
+  // Context
+  currentPage     String?     // Where user is in the app
+  userRole        UserRole?   // Player, Developer, Admin
+  
+  // Metadata
+  title           String?     // Auto-generated from first message
+  resolved        Boolean     @default(false)
+  escalatedToHuman Boolean    @default(false)
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  // Relations
+  messages        AIMessage[]
+  feedback        AIFeedback[]
+  
+  @@index([userId])
+  @@index([sessionId])
+  @@index([createdAt])
+}
+
+model AIMessage {
+  id              String        @id @default(uuid())
+  conversationId  String
+  
+  role            AIMessageRole
+  content         String
+  
+  // AI metadata
+  provider        AIProvider?   // Which AI answered
+  model           String?       // e.g., "gpt-4", "claude-3"
+  tokensUsed      Int?
+  responseTimeMs  Int?          // How long AI took to respond
+  
+  // For learning
+  confidence      Float?        // AI's confidence in response
+  knowledgeUsed   String[]      // Which knowledge base entries were used
+  
+  // Voice
+  hasVoiceInput   Boolean       @default(false)
+  hasVoiceOutput  Boolean       @default(false)
+  
+  createdAt       DateTime      @default(now())
+  
+  // Relations
+  conversation    AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  feedback        AIFeedback[]
+  
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+model AIFeedback {
+  id              String          @id @default(uuid())
+  conversationId  String
+  messageId       String?
+  userId          String?
+  
+  rating          AIFeedbackRating
+  comment         String?         // Optional user comment
+  
+  // Learning metadata
+  wasResolved     Boolean         @default(false)
+  
+  createdAt       DateTime        @default(now())
+  
+  // Relations
+  conversation    AIConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message         AIMessage?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  
+  @@index([conversationId])
+  @@index([rating])
+  @@index([createdAt])
+}
+
+model AIKnowledgeBase {
+  id              String              @id @default(uuid())
+  
+  // Content
+  title           String
+  content         String              // The actual knowledge content
+  category        AIKnowledgeCategory
+  tags            String[]
+  
+  // For semantic search (vector embeddings)
+  embedding       Float[]             // Vector embedding for similarity search
+  
+  // Metadata
+  source          String?             // Where this came from (docs, FAQ, etc.)
+  version         Int                 @default(1)
+  isActive        Boolean             @default(true)
+  
+  // Stats
+  timesUsed       Int                 @default(0)
+  avgHelpfulness  Float               @default(0)
+  
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  
+  @@index([category])
+  @@index([tags])
+  @@index([isActive])
+}
+
+model AILearnedPattern {
+  id              String    @id @default(uuid())
+  
+  // Pattern info
+  questionPattern String    // Common question type/pattern
+  category        AIKnowledgeCategory
+  
+  // Best response
+  bestResponse    String    // Highest rated response for this pattern
+  responseSource  String?   // Where the best response came from
+  
+  // Learning metrics
+  timesAsked      Int       @default(1)
+  successRate     Float     @default(0)  // % of helpful ratings
+  totalFeedback   Int       @default(0)
+  
+  // Auto-improvement
+  autoGenerated   Boolean   @default(false)
+  reviewedByHuman Boolean   @default(false)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([category])
+  @@index([successRate])
+  @@index([timesAsked])
+}
+
+model AIKnowledgeGap {
+  id              String    @id @default(uuid())
+  
+  // The unanswered question
+  question        String
+  category        AIKnowledgeCategory?
+  
+  // Context
+  conversationId  String?
+  userRole        UserRole?
+  currentPage     String?
+  
+  // Tracking
+  timesAsked      Int       @default(1)
+  needsReview     Boolean   @default(true)
+  resolved        Boolean   @default(false)
+  resolution      String?   // How it was resolved
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([needsReview])
+  @@index([timesAsked])
+  @@index([category])
+}
