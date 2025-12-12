@@ -1,276 +1,131 @@
-# Deskillz SDK for Unreal Engine
+# Deskillz Unreal Engine SDK
 
-[![SDK Version](https://img.shields.io/badge/SDK-v1.0.0-brightgreen.svg)](https://deskillz.games)
-[![UE Version](https://img.shields.io/badge/Unreal-4.27%2B%20%7C%205.x-blue.svg)](https://unrealengine.com)
-[![Platform](https://img.shields.io/badge/Platform-Win%20%7C%20Mac%20%7C%20iOS%20%7C%20Android-orange.svg)](https://deskillz.games)
+[![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-4.27%2B%20%7C%205.x-blue)](https://www.unrealengine.com/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20iOS%20%7C%20Android-green)](https://www.deskillz.games)
+[![License](https://img.shields.io/badge/License-Proprietary-red)](LICENSE)
 
-Turn your Unreal game into a competitive gaming platform with cryptocurrency prizes!
+The official Deskillz SDK for Unreal Engine enables game developers to integrate competitive skill-based tournaments with cryptocurrency prize pools into their games.
 
-## 🚀 Quick Start (2 Minutes)
+## 🎮 Features
 
-### Step 1: Install the Plugin
-```
-Copy "deskillz-unreal-sdk" folder → YourProject/Plugins/Deskillz/
-```
+### Core Features
+- **Tournament Integration** - Browse, enter, and compete in skill-based tournaments
+- **Matchmaking** - Automatic opponent matching based on skill rating
+- **Real-time Multiplayer** - WebSocket-based synchronous gameplay support
+- **Asynchronous Play** - Turn-based and score-attack game modes
 
-### Step 2: Open Setup Wizard
-When you open your project, the **Setup Wizard** launches automatically!
+### Security
+- **AES-256-GCM Encryption** - Military-grade score encryption
+- **HMAC-SHA256 Signatures** - Tamper-proof data integrity
+- **Anti-Cheat System** - Speed hack detection, memory scanning prevention
+- **Replay Attack Prevention** - Unique submission IDs with server validation
 
-Or open manually: `Window → Deskillz → Setup Wizard`
+### Wallet & Payments
+- **Multi-Currency Support** - BTC, ETH, SOL, XRP, BNB, USDT, USDC
+- **Secure Transactions** - Deposit, withdraw, and prize distribution
+- **Real-time Balance** - Live wallet balance updates
 
-### Step 3: Enter Credentials
-- Get your **API Key** and **Game ID** from the [Developer Portal](https://deskillz.games/developer)
-- The wizard guides you through each step
+### Analytics & Telemetry
+- **Event Tracking** - Comprehensive gameplay analytics
+- **Performance Monitoring** - FPS, memory, latency metrics
+- **A/B Testing** - Built-in experimentation framework
 
-### Step 4: Integrate (Just 2 Blueprint Nodes!)
+### Platform Integration
+- **Deep Linking** - Custom URL schemes and universal links
+- **Push Notifications** - Tournament reminders and match alerts
+- **App Lifecycle** - Background/foreground state management
 
-When your gameplay ends:
+### UI Components
+- **Pre-built Widgets** - Tournament list, matchmaking, results, wallet display
+- **Customizable Themes** - Match your game's visual style
+- **Blueprint Support** - Full visual scripting integration
 
-```
-┌─────────────────────────┐     ┌─────────────────────────┐
-│ Deskillz Submit Score   │────▶│ Deskillz End Match      │
-│ Score: [Your Score]     │     │                         │
-└─────────────────────────┘     └─────────────────────────┘
-```
+## 📋 Requirements
 
-**That's it!** The SDK handles everything else automatically.
+- **Unreal Engine**: 4.27+ or 5.x
+- **Platforms**: Windows, iOS, Android
+- **C++ Standard**: C++17
 
----
+## 🚀 Quick Start
 
-## 📋 Features
+### 1. Installation
 
-| Feature | Description |
-|---------|-------------|
-| **Zero-Config** | Auto-initializes, sensible defaults |
-| **Guided Setup** | Step-by-step wizard in editor |
-| **Blueprint Ready** | Full Blueprint support, no C++ required |
-| **7 Cryptocurrencies** | BTC, ETH, SOL, XRP, BNB, USDT, USDC |
-| **Real-time Multiplayer** | Sync and async match types |
-| **Practice Mode** | Free play without entry fees |
-| **Built-in UI** | Pre-made tournament, matchmaking, results screens |
-| **Anti-Cheat** | Score encryption, memory protection |
-
----
-
-## 🎮 Blueprint API Reference
-
-### Most Common (Start Here!)
-
-| Node | Description |
-|------|-------------|
-| `Deskillz Submit Score` | Submit final score when game ends |
-| `Deskillz End Match` | Complete the match |
-| `Is In Deskillz Match` | Check if in active tournament |
-| `Get Match Time Remaining` | Seconds left in match |
-
-### Match Flow
-
-| Node | Description |
-|------|-------------|
-| `Deskillz Match Ready` | Signal game scene is loaded |
-| `Update Score` | Update score during gameplay |
-| `Abort Match` | Forfeit current match |
-| `Get Match Random Seed` | Seed for deterministic gameplay |
-
-### Tournaments
-
-| Node | Description |
-|------|-------------|
-| `Show Tournaments` | Open tournament browser |
-| `Join Tournament` | Enter a tournament |
-| `Find Match` | Start matchmaking |
-| `Cancel Matchmaking` | Stop searching |
-
-### Practice Mode
-
-| Node | Description |
-|------|-------------|
-| `Start Practice` | Begin free play session |
-| `End Practice` | Finish practice |
-| `Is In Practice` | Check if in practice mode |
-
-### Player & Wallet
-
-| Node | Description |
-|------|-------------|
-| `Get Current Player` | Your player info |
-| `Get Opponent` | Opponent info in match |
-| `Get Balance` | Wallet balance by currency |
-| `Show Wallet` | Open wallet UI |
-
----
-
-## 📦 File Structure
+Copy the SDK to your project's Plugins folder:
 
 ```
-Plugins/Deskillz/
-├── Deskillz.uplugin              # Plugin descriptor
-├── Source/
-│   ├── Deskillz/                 # Runtime module
-│   │   ├── Public/
-│   │   │   ├── Core/
-│   │   │   │   ├── DeskillzSDK.h         # Main SDK class
-│   │   │   │   ├── DeskillzConfig.h      # Configuration
-│   │   │   │   ├── DeskillzTypes.h       # Data types & enums
-│   │   │   │   └── DeskillzEvents.h      # Event system
-│   │   │   └── Blueprints/
-│   │   │       ├── DeskillzBlueprintLibrary.h  # Static Blueprint API
-│   │   │       └── DeskillzManager.h     # Auto-spawn manager
-│   │   └── Private/              # Implementations
-│   │
-│   └── DeskillzEditor/           # Editor module
-│       └── Public/
-│           └── DeskillzSetupWizard.h     # Setup wizard
-│
-├── Content/
-│   ├── Blueprints/               # Pre-made Blueprint actors
-│   └── Widgets/                  # UMG widget Blueprints
-│
-└── README.md                     # This file
+YourProject/
+└── Plugins/
+    └── Deskillz/
+        ├── Deskillz.uplugin
+        └── Source/
 ```
 
----
+### 2. Configure SDK
 
-## ⚙️ Configuration
-
-### Via Project Settings
-`Edit → Project Settings → Plugins → Deskillz SDK`
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| API Key | - | Your Deskillz API key |
-| Game ID | - | Your game identifier |
-| Environment | Sandbox | Sandbox or Production |
-| Default Match Duration | 180s | Match time limit |
-| Enable Practice Mode | ✓ | Allow free play |
-| Auto Submit Scores | ✓ | Auto-submit on match end |
-| Use Built-in UI | ✓ | Show Deskillz UI |
-
-### Via C++ (Optional)
 ```cpp
-// In your GameMode or anywhere after BeginPlay
-UDeskillzSDK* SDK = UDeskillzSDK::Get(this);
-SDK->InitializeWithCredentials("API_KEY", "GAME_ID", EDeskillzEnvironment::Sandbox);
+#include "Core/DeskillzSDK.h"
+
+FDeskillzConfig Config;
+Config.GameId = TEXT("your_game_id");
+Config.ApiKey = TEXT("your_api_key");
+Config.Environment = EDeskillzEnvironment::Sandbox;
+
+UDeskillzSDK::Get()->Initialize(Config);
 ```
 
----
+### 3. Enter Tournament & Submit Score
 
-## 🎯 Integration Examples
+```cpp
+// Start matchmaking
+UDeskillzMatchmaking::Get()->StartMatchmaking(TournamentId, OnMatchFound);
 
-### Example 1: Submit Score (Minimal)
-```
-// In your EndGame event or function:
-
-[Event: Game Over]
-        │
-        ▼
-┌─────────────────────────┐
-│ Deskillz Submit Score   │
-│ Score: [FinalScore]     │
-└─────────────────────────┘
-        │
-        ▼
-┌─────────────────────────┐
-│ Deskillz End Match      │
-└─────────────────────────┘
+// Submit score when game ends
+UDeskillzSecureSubmitter::Get()->SubmitScore(Score, Duration, OnSubmitted);
 ```
 
-### Example 2: Check If Tournament Match
-```
-[Event: Begin Play]
-        │
-        ▼
-┌─────────────────────────┐
-│ Is In Deskillz Match    │──▶ True: Enable tournament features
-└─────────────────────────┘──▶ False: Normal gameplay
-```
+## 📁 SDK Structure
 
-### Example 3: Match Timer Display
-```
-[Event: Tick]
-        │
-        ▼
-┌─────────────────────────┐
-│ Get Match Time Remaining│──▶ Update UI text
-└─────────────────────────┘
-```
+| Module | Description | Files |
+|--------|-------------|-------|
+| **Core** | SDK lifecycle, configuration, events | 6 |
+| **Match** | Tournament entry, matchmaking | 4 |
+| **Security** | Encryption, anti-cheat | 8 |
+| **Network** | HTTP, WebSocket, API | 8 |
+| **Analytics** | Event tracking, telemetry | 6 |
+| **Platform** | Device, deep links, notifications | 8 |
+| **UI** | Pre-built UMG widgets | 18 |
+| **Blueprints** | Visual scripting support | 4 |
+| **Tests** | Unit & integration tests | 6 |
 
-### Example 4: Use Random Seed (Fair Play)
-```
-[Event: Match Start]
-        │
-        ▼
-┌─────────────────────────┐
-│ Get Match Random Seed   │──▶ Set Random Seed
-└─────────────────────────┘
-```
-
----
-
-## 🔧 Events (Blueprint Assignable)
-
-Bind to these in your Level Blueprint or Actor:
-
-| Event | Fires When |
-|-------|------------|
-| `On SDK Initialized` | SDK ready (or failed) |
-| `On Match Ready` | Opponent found, match starting |
-| `On Gameplay Start` | Start your game timer! |
-| `On Match Completed` | Results available |
-| `On Match Time Update` | Every second during match |
-| `On Error` | Something went wrong |
-
----
-
-## 🛡️ Security Features
-
-- **Score Encryption**: AES-256-GCM encryption
-- **HMAC Validation**: Tamper-proof score verification
-- **Memory Protection**: Anti-cheat memory scanning
-- **Replay Detection**: Duplicate submission prevention
-- **Device Fingerprinting**: Unique device identification
-
----
+**Total: ~32,000 lines of C++ code**
 
 ## 💰 Supported Cryptocurrencies
 
-| Currency | Symbol | Type |
-|----------|--------|------|
-| Bitcoin | BTC | Native |
-| Ethereum | ETH | Native |
-| Solana | SOL | Native |
-| Ripple | XRP | Native |
-| Binance Coin | BNB | Token |
-| Tether | USDT | Stablecoin |
-| USD Coin | USDC | Stablecoin |
-
----
-
-## 📱 Platform Support
-
-| Platform | Status |
+| Currency | Symbol |
 |----------|--------|
-| Windows | ✅ Supported |
-| macOS | ✅ Supported |
-| Linux | ✅ Supported |
-| iOS | ✅ Supported |
-| Android | ✅ Supported |
+| Bitcoin | BTC |
+| Ethereum | ETH |
+| Solana | SOL |
+| Ripple | XRP |
+| BNB | BNB |
+| Tether | USDT |
+| USD Coin | USDC |
+
+## 📚 Documentation
+
+- [Quick Start Guide](Docs/QUICKSTART.md)
+- [API Reference](Docs/API_REFERENCE.md)
+- [Integration Guide](Docs/INTEGRATION_GUIDE.md)
+- [Changelog](CHANGELOG.md)
+
+## 🤝 Support
+
+- **Documentation**: [docs.deskillz.games](https://docs.deskillz.games)
+- **Developer Portal**: [developer.deskillz.games](https://developer.deskillz.games)
+- **Email**: sdk-support@deskillz.games
 
 ---
 
-## 🆘 Support
-
-- **Documentation**: [docs.deskillz.games/unreal](https://docs.deskillz.games/unreal)
-- **Developer Portal**: [deskillz.games/developer](https://deskillz.games/developer)
-- **Support**: [support.deskillz.games](https://support.deskillz.games)
-- **Discord**: Join our developer community
-
----
-
-## 📄 License
+**Deskillz** - Skill-Based Gaming with Crypto Prizes
 
 © 2024 Deskillz Games. All rights reserved.
-
----
-
-**Ready to make your game competitive? Let's go! 🎮🏆💰**

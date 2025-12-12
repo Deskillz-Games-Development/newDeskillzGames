@@ -1,4 +1,5 @@
-import { getDefaultConfig } from '@rainbow-me/rainbowkit'
+import { connectorsForWallets } from '@rainbow-me/rainbowkit'
+import { createConfig } from 'wagmi'
 import { 
   mainnet, 
   polygon, 
@@ -9,6 +10,17 @@ import {
   sepolia 
 } from 'wagmi/chains'
 import { http } from 'wagmi'
+
+// Import wallet connectors
+import {
+  metaMaskWallet,
+  coinbaseWallet,
+  walletConnectWallet,
+  rainbowWallet,
+  trustWallet,
+  bitgetWallet,
+  phantomWallet,
+} from '@rainbow-me/rainbowkit/wallets'
 
 // Supported chains for the platform
 export const supportedChains = [
@@ -21,10 +33,38 @@ export const supportedChains = [
   sepolia, // Testnet for development
 ] as const
 
-// RainbowKit config
-export const wagmiConfig = getDefaultConfig({
-  appName: 'Deskillz.Games',
-  projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 'demo-project-id',
+const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 'demo-project-id'
+console.log('WalletConnect Project ID:', projectId)  // ← Add this line
+// Configure wallet groups
+const connectors = connectorsForWallets(
+  [
+    {
+      groupName: 'Popular',
+      wallets: [
+        metaMaskWallet,
+        coinbaseWallet,
+        walletConnectWallet,
+        rainbowWallet,
+      ],
+    },
+    {
+      groupName: 'More',
+      wallets: [
+        trustWallet,
+        bitgetWallet,
+        phantomWallet,
+      ],
+    },
+  ],
+  {
+    appName: 'Deskillz.Games',
+    projectId,
+  }
+)
+
+// Create wagmi config with custom wallets
+export const wagmiConfig = createConfig({
+  connectors,
   chains: supportedChains,
   transports: {
     [mainnet.id]: http(),

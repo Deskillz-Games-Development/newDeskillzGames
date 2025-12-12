@@ -72,8 +72,11 @@ public class Deskillz : ModuleRules
 			);
 		}
 
-		// Encryption library for score security
+		// Encryption library for score security (AES-256-GCM + HMAC-SHA256)
 		PublicDefinitions.Add("WITH_SSL=1");
+		
+		// Add OpenSSL for encryption (if available)
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 		
 		// Enable exceptions for error handling
 		bEnableExceptions = true;
